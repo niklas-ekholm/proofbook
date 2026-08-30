@@ -28,6 +28,10 @@ _Avoid_: note, comment, description, label
 Glyphs' text-editing tab, where a selected proof-page's content is displayed.
 _Avoid_: editor window, canvas, edit tab
 
+**ProofBook tab**:
+The Edit view tab ProofBook opened to display a proof-page. Selecting a proof-page reuses this tab; a tab the designer opened themselves is never written to.
+_Avoid_: our tab, the plugin tab, proof tab
+
 **coverage**:
 The degree to which a typeface's relevant combinations have been designed and reviewed across all masters and interpolations. The reason proof-books exist.
 _Avoid_: completeness, testing, QA
