@@ -13,3 +13,9 @@ Changing a status is a **rename**, so git records status history as renames and 
 The frontmatter *format* (YAML, TOML, or a hand-rolled line-based header) is deliberately left open; it depends on what is importable inside Glyphs 4's Python, and the plugin must write it, not only read it.
 
 These decisions are provisional for the MVP and expected to be revisited once it has been used.
+
+## The filename grammar, refined
+
+Three shapes are legal: `subject.txt`, `subject-STATUS.txt`, and `subject-STATUS-OWNER.txt`. Status and owner are independent — a page may be tagged with no owner — but an owner is only ever read from the position *after* a recognised status, so the closed set `TODO`/`WIP`/`DONE` anchors the parse and a short trailing subject word is never mistaken for initials. An owner segment is 1-4 letters, uppercased on write.
+
+Status words are matched **case-insensitively**, which is a deliberate trade: `things-done.txt` reads as the subject `things` with status `DONE`, not as a subject that happens to end in an English word. Matching case-sensitively would remove the ambiguity, and it was rejected because a human hand-naming a file should not have to know that capitalisation is load-bearing. The failure is a visibly wrong status on one row, fixed by renaming the file; nothing is lost. Do not "fix" this with case-sensitivity without revisiting that trade.

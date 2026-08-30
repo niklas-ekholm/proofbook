@@ -37,5 +37,5 @@ The degree to which a typeface's relevant combinations have been designed and re
 _Avoid_: completeness, testing, QA
 
 **owner**:
-The person responsible for a proof-page, identified by their initials. Exactly one per proof-page; a second person working on the same subject owns a separate proof-page.
+The person responsible for a proof-page, identified by their initials. At most one per proof-page — a page can be tagged with a status and no owner — and a second person working on the same subject owns a separate proof-page.
 _Avoid_: author, editor, assignee, creator
