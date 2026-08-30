@@ -1,2 +1,5 @@
 .DS_Store
 .claude/worktrees/
+
+# Glyphs code editor autosaves, written inside plugin bundles
+*(autosave).py
