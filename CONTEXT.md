@@ -31,3 +31,7 @@ _Avoid_: editor window, canvas, edit tab
 **coverage**:
 The degree to which a typeface's relevant combinations have been designed and reviewed across all masters and interpolations. The reason proof-books exist.
 _Avoid_: completeness, testing, QA
+
+**owner**:
+The person responsible for a proof-page, identified by their initials. Exactly one per proof-page; a second person working on the same subject owns a separate proof-page.
+_Avoid_: author, editor, assignee, creator
