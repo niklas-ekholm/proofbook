@@ -82,3 +82,62 @@ def sys_path_mutation_lines(tree):
 		):
 			lines.append(node.lineno)
 	return lines
+
+
+def dotted_name(node):
+	"""`os.path.isdir` for the attribute/name chain, or None if it is neither."""
+	parts = []
+	while isinstance(node, ast.Attribute):
+		parts.append(node.attr)
+		node = node.value
+	if not isinstance(node, ast.Name):
+		return None
+	parts.append(node.id)
+	return ".".join(reversed(parts))
+
+
+def attribute_reads(tree, dotted):
+	"""Lines where `dotted` is read as an attribute chain, called or not."""
+	return [
+		node.lineno
+		for node in ast.walk(tree)
+		if isinstance(node, ast.Attribute) and dotted_name(node) == dotted
+	]
+
+
+def function(tree, name):
+	"""The (possibly nested) function definition called `name`, or None."""
+	for node in ast.walk(tree):
+		if isinstance(node, ast.FunctionDef) and node.name == name:
+			return node
+	return None
+
+
+def called_names(node):
+	"""Every dotted callee name under `node`, bare `open(...)` included."""
+	names = set()
+	for child in ast.walk(node):
+		if not isinstance(child, ast.Call):
+			continue
+		name = dotted_name(child.func)
+		if name:
+			names.add(name)
+	return names
+
+
+def referenced_names(node):
+	"""Every bare name read under `node` — `DOCUMENTWASSAVED`, not `a.b`."""
+	return {
+		child.id for child in ast.walk(node) if isinstance(child, ast.Name)
+	}
+
+
+def keyword_argument_names(node):
+	"""Every keyword argument name used in a call under `node`."""
+	return {
+		keyword.arg
+		for child in ast.walk(node)
+		if isinstance(child, ast.Call)
+		for keyword in child.keywords
+		if keyword.arg
+	}
