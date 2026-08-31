@@ -206,6 +206,14 @@ class ProofBookPalette(PalettePlugin):
 		palette = GSPaletteView.alloc().initWithFrame_(
 			NSMakeRect(0, 0, size.width, size.height)
 		)
+		# The drag resizes through Auto Layout: `mouseDragged:` writes the new
+		# height into the view and calls `invalidateIntrinsicContentSize`, and
+		# `intrinsicContentSize` returns it. A view built in code translates
+		# its autoresizing mask into constraints by default, which pins the
+		# height and makes the intrinsic size count for nothing — so the pill
+		# draws, the cursor changes, and the drag does nothing at all. A
+		# GSPaletteView out of a nib has this off; ours has to say so.
+		palette.setTranslatesAutoresizingMaskIntoConstraints_(False)
 		content.setFrame_(
 			NSMakeRect(
 				0,
@@ -566,17 +574,23 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.typedSelector(b"L@:")
 	def currentHeight(self):
+		"""The height Glyphs last set, or the minimum on a first run."""
 		stored = Glyphs.defaults[VIEW_HEIGHT_KEY]
 		try:
-			height = int(stored)
+			return int(stored)
 		except (TypeError, ValueError):
 			return PALETTE_MIN_HEIGHT
-		return max(PALETTE_MIN_HEIGHT, min(PALETTE_MAX_HEIGHT, height))
 
 	@objc.typedSelector(b"v@:L")
 	def setCurrentHeight_(self, newHeight):
-		if PALETTE_MIN_HEIGHT <= newHeight <= PALETTE_MAX_HEIGHT:
-			Glyphs.defaults[VIEW_HEIGHT_KEY] = int(newHeight)
+		"""Store what Glyphs sets. The range is not enforced here.
+
+		`-[GSPaletteView mouseDragged:]` has already clamped against
+		minHeight and maxHeight, and then added the section's own chrome, so
+		the number arriving is taller than maxHeight by design. Re-checking it
+		against the range would silently drop the top of every drag.
+		"""
+		Glyphs.defaults[VIEW_HEIGHT_KEY] = int(newHeight)
 
 	@objc.python_method
 	def __file__(self):
