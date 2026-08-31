@@ -449,12 +449,16 @@ class ProofBookPalette(PalettePlugin):
 
 	# -- Palette chrome ---------------------------------------------------
 	#
-	# All four are redeclared at the width Glyphs itself uses. Its palette
-	# properties are `Tq` and `TQ` — NSInteger and NSUInteger, 64-bit — while
-	# the Python SDK declares these selectors `l` and `L`, which are 32-bit.
-	# A range read at the wrong width never arrives, and a palette with no
-	# usable range is drawn at a fixed height with no resize handle at its
-	# foot. The bundled Layers palette, which has one, declares `q` and `Q`.
+	# Glyphs declares its palette height properties `Tq` and `TQ` — NSInteger
+	# and NSUInteger, 64-bit — while the Python SDK declares the selectors
+	# behind them `l` and `L`. The bundled Layers palette, which has a working
+	# resize handle, is ObjC declaring `q` and `Q`.
+	#
+	# Only the range is redeclared at 64 bits. `currentHeight` cannot be:
+	# PyObjC refuses a subclass that changes a signature the runtime has
+	# already registered, and raises BadPrototypeError while building the
+	# class — which loses the whole plugin, not just the height. So the two
+	# persistence accessors keep the SDK's width and override only the key.
 
 	@objc.typedSelector(b"q@:")
 	def minHeight(self):
@@ -464,7 +468,7 @@ class ProofBookPalette(PalettePlugin):
 	def maxHeight(self):
 		return PALETTE_MAX_HEIGHT
 
-	@objc.typedSelector(b"Q@:")
+	@objc.typedSelector(b"L@:")
 	def currentHeight(self):
 		stored = Glyphs.defaults[VIEW_HEIGHT_KEY]
 		try:
@@ -473,7 +477,7 @@ class ProofBookPalette(PalettePlugin):
 			return PALETTE_MIN_HEIGHT
 		return max(PALETTE_MIN_HEIGHT, min(PALETTE_MAX_HEIGHT, height))
 
-	@objc.typedSelector(b"v@:Q")
+	@objc.typedSelector(b"v@:L")
 	def setCurrentHeight_(self, newHeight):
 		if PALETTE_MIN_HEIGHT <= newHeight <= PALETTE_MAX_HEIGHT:
 			Glyphs.defaults[VIEW_HEIGHT_KEY] = int(newHeight)

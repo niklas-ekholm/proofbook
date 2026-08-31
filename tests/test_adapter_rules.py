@@ -50,14 +50,20 @@ HEIGHT_BOUNDS = [
 
 # Glyphs declares its palette height properties `Tq` and `TQ` — NSInteger and
 # NSUInteger, 64-bit. The Python SDK declares the selectors behind them `l`
-# and `L`, which are 32-bit, so a palette that inherits the SDK's declaration
-# hands Glyphs a range it cannot read and is drawn at a fixed height with no
-# resize handle. Every one of these must be redeclared at 64 bits.
+# and `L`, and a palette that inherits that declaration is drawn at a fixed
+# height with no resize handle.
+#
+# The range is therefore redeclared at 64 bits and the two persistence
+# accessors are not: PyObjC refuses a subclass that changes a signature the
+# runtime has already registered for a selector, and raises BadPrototypeError
+# while building the class, which loses the whole plugin. These four widths
+# are the combination that both loads and resizes; changing one is a crash or
+# a silently fixed palette, so they are pinned exactly.
 SELECTOR_ENCODINGS = {
 	"minHeight": b"q@:",
 	"maxHeight": b"q@:",
-	"currentHeight": b"Q@:",
-	"setCurrentHeight_": b"v@:Q",
+	"currentHeight": b"L@:",
+	"setCurrentHeight_": b"v@:L",
 }
 
 # The SDK persists the dragged height under `self.name + ".ViewHeight"`; both
