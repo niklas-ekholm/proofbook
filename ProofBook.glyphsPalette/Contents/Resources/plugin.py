@@ -30,6 +30,7 @@ from AppKit import (
 	NSView,
 	NSWindowDidBecomeKeyNotification,
 )
+from Foundation import NSObject
 from GlyphsApp import DOCUMENTWASSAVED, Glyphs
 from GlyphsApp.plugins import PalettePlugin
 
@@ -69,6 +70,12 @@ PALETTE_MAX_HEIGHT = 400
 # silently start again from the default. Keyed off the bundle identifier
 # instead, which is the one name that does not move.
 VIEW_HEIGHT_KEY = "com.niklasekholm.ProofBookPalette.ViewHeight"
+
+# How many runloop turns to wait for Glyphs to hand the palette its window
+# controller. It has always arrived on the first, but resolving against a
+# palette with no window would draw "Font not saved" over a saved font, so
+# the wait is bounded rather than assumed.
+ATTACH_ATTEMPTS = 10
 
 # The tree is drawn as text (ADR-0002), so the indent is text too: one em
 # space per level, then a two-cell lead that keeps a page's subject aligned
@@ -122,6 +129,14 @@ class ProofBookPalette(PalettePlugin):
 	@objc.python_method
 	def settings(self):
 		self.name = Glyphs.localize({"en": "ProofBook"})
+
+		# The SDK reads the palette's height range off these two attributes,
+		# through accessors it declares with typed selectors; overriding
+		# minHeight/maxHeight in Python instead leaves `init` to fill them
+		# from the view's frame, which is one number, so Glyphs sees a fixed
+		# height and draws no resize handle at the foot of the palette.
+		self.min = PALETTE_MIN_HEIGHT
+		self.max = PALETTE_MAX_HEIGHT
 
 		# Nothing here may touch the disk: settings() runs while the document
 		# window is being built. The proof-book is resolved when this
@@ -207,32 +222,36 @@ class ProofBookPalette(PalettePlugin):
 		# action, and what makes Save As re-resolve with no special case: the
 		# font moves, the proof-book does not follow.
 		Glyphs.addCallback(self.documentWasSaved, DOCUMENTWASSAVED)
-		# Resolution rides the become-key refresh of spec §6, so opening a
-		# document and expanding the palette cost no syscall, and a proof-book
-		# made in Finder appears on the way back into the window. It costs one
-		# stat per switch to this window — issue #15 asks for no disk on a
-		# window switch, but a resolution that never re-runs strands the
-		# designer on an empty state with no way out, and §6 is the more
-		# specific rule. Re-reading the listing here is issue #20.
+		# Refresh rides become-key (spec §6), so a proof-book made in Finder
+		# appears on the way back into the window. It costs one stat per
+		# switch to this window — issue #15 asks for no disk on a window
+		# switch, but a resolution that never re-runs strands the designer on
+		# an empty state with no way out, and §6 is the more specific rule.
+		# Re-reading the listing on every become-key is issue #20.
 		NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
 			self,
 			"windowBecameKey:",
 			NSWindowDidBecomeKeyNotification,
 			None,
 		)
-		# If this window is key already, its become-key has been and gone and
-		# nothing would ever resolve. This is the one syscall at load time,
-		# and it happens only when the palette is on screen with nothing to
-		# show — which is a drawn-blank palette, not a background window.
-		window = self._window()
-		if window is not None and window.isKeyWindow():
-			self._resolve()
+		# Nothing above this line has touched the disk, and the first read
+		# waits for the next runloop turn: `start` runs from `init`, before
+		# Glyphs has handed the palette its window controller, so there is no
+		# window to ask about yet and this window's become-key may already
+		# have fired. Without this the palette draws blank on every document
+		# open until the designer leaves Glyphs and comes back.
+		self.attachAttempts = ATTACH_ATTEMPTS
+		self.performSelector_withObject_afterDelay_(
+			"resolveWhenAttached:", None, 0.0
+		)
 		print("ProofBook loaded — %s" % ", ".join(_report_lines()))
 
 	def __del__(self):
-		# Callbacks left registered outlive the window and crash Glyphs.
+		# Callbacks left registered outlive the window and crash Glyphs, and
+		# a delayed perform holds a reference of its own.
 		Glyphs.removeCallback(self.documentWasSaved)
 		NSNotificationCenter.defaultCenter().removeObserver_(self)
+		NSObject.cancelPreviousPerformRequestsWithTarget_(self)
 
 	# -- Glyphs and AppKit callbacks -------------------------------------
 
@@ -240,6 +259,21 @@ class ProofBookPalette(PalettePlugin):
 		# `!=`, not `is not`: two PyObjC proxies for one window are two
 		# objects, and getting this wrong would wedge the palette blank.
 		if notification.object() != self._window():
+			return
+		self._resolve()
+
+	def resolveWhenAttached_(self, sender):
+		"""The first resolve, once the palette knows which window it is in.
+
+		Re-arms rather than resolving blind: a palette with no window
+		controller has no font to ask about, and resolving anyway would draw
+		the unsaved empty state over a font that is saved.
+		"""
+		if self.windowController() is None and self.attachAttempts > 0:
+			self.attachAttempts -= 1
+			self.performSelector_withObject_afterDelay_(
+				"resolveWhenAttached:", None, 0.0
+			)
 			return
 		self._resolve()
 
@@ -422,12 +456,6 @@ class ProofBookPalette(PalettePlugin):
 			print("ProofBook: %s" % message)
 
 	# -- Palette chrome ---------------------------------------------------
-
-	def minHeight(self):
-		return PALETTE_MIN_HEIGHT
-
-	def maxHeight(self):
-		return PALETTE_MAX_HEIGHT
 
 	@objc.typedSelector(b"L@:")
 	def currentHeight(self):

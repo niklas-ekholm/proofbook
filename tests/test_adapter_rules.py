@@ -37,16 +37,17 @@ FILESYSTEM_CALLS = {
 # here may touch the disk or reach _resolve, which is where the one stat
 # lives: the proof-book is resolved when the window becomes key (issue #15).
 #
-# `start` is deliberately absent. It resolves in exactly one case — the window
-# is key already, so its become-key has been and gone — and a palette drawn
-# blank forever is the worse bug.
-LOAD_TIME_METHODS = ["settings", "_vanilla_view", "_appkit_view"]
+# `start` is included: the first resolve is deferred to the next runloop turn,
+# because `start` runs from `init`, before Glyphs has handed the palette its
+# window controller.
+LOAD_TIME_METHODS = ["settings", "_vanilla_view", "_appkit_view", "start"]
 
-# The palette's height is a range with the tree scrolling inside it, and the
-# range is stated once, in constants both ends read.
+# The palette's height range reaches Glyphs through the SDK's own attributes.
+# Overriding minHeight/maxHeight in Python instead leaves `init` to fill them
+# from the view's frame — one number, so no resize handle is drawn.
 HEIGHT_BOUNDS = [
-	("minHeight", "PALETTE_MIN_HEIGHT"),
-	("maxHeight", "PALETTE_MAX_HEIGHT"),
+	("self.min", "PALETTE_MIN_HEIGHT"),
+	("self.max", "PALETTE_MAX_HEIGHT"),
 ]
 
 # The SDK persists the dragged height under `self.name + ".ViewHeight"`; both
@@ -113,11 +114,20 @@ class AdapterRules(unittest.TestCase):
 			maximum,
 			"a single fixed height makes the palette track its content",
 		)
-		for method, constant in HEIGHT_BOUNDS:
-			with self.subTest(method=method):
-				node = pysource.function(self.adapter, method)
-				self.assertIsNotNone(node)
-				self.assertIn(constant, pysource.referenced_names(node))
+		settings = pysource.function(self.adapter, "settings")
+		self.assertIsNotNone(settings)
+		for attribute, constant in HEIGHT_BOUNDS:
+			with self.subTest(attribute=attribute):
+				self.assertTrue(
+					pysource.attribute_reads(settings, attribute),
+					"settings no longer sets %s, so the SDK falls back to "
+					"the view's frame and the palette stops resizing"
+					% attribute,
+				)
+		self.assertLessEqual(
+			{"PALETTE_MIN_HEIGHT", "PALETTE_MAX_HEIGHT"},
+			pysource.referenced_names(settings),
+		)
 
 	def test_the_stored_height_is_not_keyed_off_the_localised_name(self):
 		# The SDK derives its key from self.name, which Glyphs.localize
@@ -134,6 +144,24 @@ class AdapterRules(unittest.TestCase):
 				self.assertIn(
 					"VIEW_HEIGHT_KEY", pysource.referenced_names(node)
 				)
+
+	def test_the_first_resolve_is_deferred_until_the_palette_is_attached(self):
+		# `start` runs from `init`, before Glyphs sets the window controller,
+		# and this window's become-key may already have fired. Without the
+		# deferred resolve the palette draws blank on every document open.
+		called = pysource.called_names(self.adapter)
+		self.assertIn("self.performSelector_withObject_afterDelay_", called)
+		self.assertIsNotNone(
+			pysource.function(self.adapter, "resolveWhenAttached_"),
+			"nothing performs the deferred resolve any more",
+		)
+
+	def test_every_delayed_perform_the_adapter_schedules_is_cancelled(self):
+		self.assertIn(
+			"NSObject.cancelPreviousPerformRequestsWithTarget_",
+			pysource.called_names(self.adapter),
+			"a delayed perform outlives the window and holds a reference",
+		)
 
 	def test_the_palette_installs_no_context_menu(self):
 		# Neither empty state offers one, and there are no rows to target
