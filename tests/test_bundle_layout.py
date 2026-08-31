@@ -27,7 +27,7 @@ ADAPTER = os.path.join(RESOURCES, "plugin.py")
 
 class BundleLayout(unittest.TestCase):
 	def setUp(self):
-		self.tree = pysource.parse(ADAPTER)
+		self.adapter = pysource.parse(ADAPTER)
 
 	def test_the_bundle_sits_at_the_repository_root(self):
 		self.assertEqual(os.path.basename(BUNDLE), "ProofBook.glyphsPalette")
@@ -51,16 +51,16 @@ class BundleLayout(unittest.TestCase):
 
 	def test_the_adapter_puts_its_own_directory_on_sys_path_before_importing(self):
 		core_imports = pysource.top_level_statement_lines_importing(
-			self.tree, "proofbook"
+			self.adapter, "proofbook"
 		)
 		self.assertTrue(core_imports, "adapter never imports the core package")
-		mutations = pysource.sys_path_mutation_lines(self.tree)
+		mutations = pysource.sys_path_mutation_lines(self.adapter)
 		self.assertTrue(mutations, "adapter never puts itself on sys.path")
 		self.assertLess(min(mutations), min(core_imports))
 
 	def test_the_vanilla_guard_stays_at_module_scope(self):
 		self.assertTrue(
-			pysource.has_module_scope_import_guard(self.tree, "vanilla"),
+			pysource.has_module_scope_import_guard(self.adapter, "vanilla"),
 			"the try/except ImportError around vanilla is no longer at module "
 			"scope — the SDK calls settings() from init unguarded (issue #8)",
 		)

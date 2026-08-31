@@ -82,3 +82,88 @@ def sys_path_mutation_lines(tree):
 		):
 			lines.append(node.lineno)
 	return lines
+
+
+def dotted_name(node):
+	"""`os.path.isdir` for the attribute/name chain, or None if it is neither."""
+	parts = []
+	while isinstance(node, ast.Attribute):
+		parts.append(node.attr)
+		node = node.value
+	if not isinstance(node, ast.Name):
+		return None
+	parts.append(node.id)
+	return ".".join(reversed(parts))
+
+
+def attribute_reads(tree, dotted):
+	"""Lines where `dotted` is read as an attribute chain, called or not."""
+	return [
+		node.lineno
+		for node in ast.walk(tree)
+		if isinstance(node, ast.Attribute) and dotted_name(node) == dotted
+	]
+
+
+def function(tree, name):
+	"""The (possibly nested) function definition called `name`, or None."""
+	for node in ast.walk(tree):
+		if isinstance(node, ast.FunctionDef) and node.name == name:
+			return node
+	return None
+
+
+def called_names(node):
+	"""Every dotted callee name under `node`, bare `open(...)` included."""
+	names = set()
+	for child in ast.walk(node):
+		if not isinstance(child, ast.Call):
+			continue
+		name = dotted_name(child.func)
+		if name:
+			names.add(name)
+	return names
+
+
+def referenced_names(node):
+	"""Every bare name read under `node` — `DOCUMENTWASSAVED`, not `a.b`."""
+	return {
+		child.id for child in ast.walk(node) if isinstance(child, ast.Name)
+	}
+
+
+def keyword_argument_names(node):
+	"""Every keyword argument name used in a call under `node`."""
+	return {
+		keyword.arg
+		for child in ast.walk(node)
+		if isinstance(child, ast.Call)
+		for keyword in child.keywords
+		if keyword.arg
+	}
+
+
+def module_constant(tree, name):
+	"""The literal value assigned to a module-level `NAME = ...`, or None."""
+	for node in tree.body:
+		if not isinstance(node, ast.Assign):
+			continue
+		for target in node.targets:
+			if isinstance(target, ast.Name) and target.id == name:
+				return ast.literal_eval(node.value)
+	return None
+
+
+def typed_selector_encoding(tree, name):
+	"""The `objc.typedSelector(b"...")` encoding on a method, or None."""
+	node = function(tree, name)
+	if node is None:
+		return None
+	for decorator in node.decorator_list:
+		if not isinstance(decorator, ast.Call):
+			continue
+		if dotted_name(decorator.func) != "objc.typedSelector":
+			continue
+		if decorator.args:
+			return ast.literal_eval(decorator.args[0])
+	return None
