@@ -46,6 +46,12 @@ from proofbook import discovery, tree  # noqa: E402
 
 PROOFBOOK_FORCE_NO_VANILLA = False
 
+# Temporary, for issue #16: the palette draws no resize handle and reading the
+# SDK has not said why. This reports what the live plugin actually hands
+# Glyphs, once per palette, after load — a load-time print is invisible in the
+# Macro Panel. Remove it once the handle is understood.
+PROOFBOOK_DEBUG_HEIGHT = True
+
 # Guard at module scope, never inside PalettePlugin.init — the SDK calls
 # settings() and start() from init unguarded (see issue #8).
 try:
@@ -129,6 +135,12 @@ class ProofBookPalette(PalettePlugin):
 	@objc.python_method
 	def settings(self):
 		self.name = Glyphs.localize({"en": "ProofBook"})
+
+		# The height range, read by the SDK's own minHeight/maxHeight. Set
+		# here because `init` fills both from the view's frame — one number,
+		# and a palette with no range cannot be resized.
+		self.min = PALETTE_MIN_HEIGHT
+		self.max = PALETTE_MAX_HEIGHT
 
 		# Nothing here may touch the disk: settings() runs while the document
 		# window is being built. The proof-book is resolved when this
@@ -267,7 +279,28 @@ class ProofBookPalette(PalettePlugin):
 				"resolveWhenAttached:", None, 0.0
 			)
 			return
+		if PROOFBOOK_DEBUG_HEIGHT:
+			self._report_height()
 		self._resolve()
+
+	@objc.python_method
+	def _report_height(self):
+		"""What Glyphs is actually told about this palette's height."""
+		view = self.theView()
+		frame = view.frame().size.height if view is not None else None
+		print(
+			"ProofBook height — min=%r max=%r current=%r "
+			"self.min=%r self.max=%r view=%r class=%s"
+			% (
+				self.minHeight(),
+				self.maxHeight(),
+				self.currentHeight(),
+				getattr(self, "min", "<unset>"),
+				getattr(self, "max", "<unset>"),
+				frame,
+				type(view).__name__,
+			)
+		)
 
 	@objc.python_method
 	def documentWasSaved(self, notification):
@@ -449,24 +482,11 @@ class ProofBookPalette(PalettePlugin):
 
 	# -- Palette chrome ---------------------------------------------------
 	#
-	# Glyphs declares its palette height properties `Tq` and `TQ` — NSInteger
-	# and NSUInteger, 64-bit — while the Python SDK declares the selectors
-	# behind them `l` and `L`. The bundled Layers palette, which has a working
-	# resize handle, is ObjC declaring `q` and `Q`.
-	#
-	# Only the range is redeclared at 64 bits. `currentHeight` cannot be:
-	# PyObjC refuses a subclass that changes a signature the runtime has
-	# already registered, and raises BadPrototypeError while building the
-	# class — which loses the whole plugin, not just the height. So the two
-	# persistence accessors keep the SDK's width and override only the key.
-
-	@objc.typedSelector(b"q@:")
-	def minHeight(self):
-		return PALETTE_MIN_HEIGHT
-
-	@objc.typedSelector(b"q@:")
-	def maxHeight(self):
-		return PALETTE_MAX_HEIGHT
+	# Every selector here keeps the width the SDK declares. PyObjC refuses a
+	# subclass that changes a signature the runtime has already registered
+	# and raises BadPrototypeError while building the class, which loses the
+	# whole plugin rather than one method — so the widths are not ours to
+	# choose, whatever Glyphs declares its own properties as.
 
 	@objc.typedSelector(b"L@:")
 	def currentHeight(self):
