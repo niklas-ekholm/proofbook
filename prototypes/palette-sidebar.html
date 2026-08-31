@@ -1,0 +1,565 @@
+<!doctype html>
+<!--
+  THROWAWAY PROTOTYPE — ProofBook palette sidebar. Issue #4.
+  Four variants of the ProofBook palette, switchable via ?variant=A|B|C|D and the
+  floating bar at the bottom. Rendered inside a mock Glyphs 4 Edit-view sidebar so
+  the 200px column is judged at its real width, stacked against other palettes.
+  Not code to keep. Answers: raw filename vs parsed row, nesting, status/owner,
+  annotation placement, context menu, empty states.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ProofBook palette — prototype</title>
+<style>
+  :root {
+    --sidebar-bg: #ececec;
+    --panel-bg: #f6f6f6;
+    --line: #d3d3d3;
+    --text: #1d1d1f;
+    --dim: #8a8a8e;
+    --sel: #3478f6;
+    --todo: #b0b0b5;
+    --wip: #e8a33d;
+    --done: #43a047;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; overflow: hidden;
+    font: 13px -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    color: var(--text); background: #dcdcdc;
+    display: flex; flex-direction: column;
+  }
+  /* ---- fake Glyphs chrome ---- */
+  .titlebar {
+    height: 38px; background: linear-gradient(#f4f4f4, #e4e4e4);
+    border-bottom: 1px solid #c0c0c0; display: flex; align-items: center;
+    padding: 0 12px; gap: 8px; flex: none;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .doc-title { margin-left: 8px; font-weight: 600; font-size: 13px; }
+  .app { flex: 1; display: flex; min-height: 0; }
+  .canvas {
+    flex: 1; background: #fbfbfb; position: relative;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  .canvas .sample {
+    font: 96px/1.2 "Times New Roman", Georgia, serif; color: #111;
+    letter-spacing: 2px; text-align: center; padding: 0 40px;
+  }
+  .canvas .tabbar {
+    position: absolute; top: 0; left: 0; right: 0; height: 26px;
+    background: #f0f0f0; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; font-size: 11px; color: var(--dim);
+  }
+  .canvas .tab {
+    padding: 0 12px; height: 100%; display: flex; align-items: center;
+    border-right: 1px solid var(--line); background: #fff; color: var(--text);
+  }
+  /* ---- sidebar ---- */
+  .sidebar {
+    width: 240px; flex: none; background: var(--sidebar-bg);
+    border-left: 1px solid #c6c6c6; overflow-y: auto;
+    display: flex; flex-direction: column;
+  }
+  .palette { border-bottom: 1px solid #cfcfcf; background: var(--panel-bg); }
+  .palette > header {
+    height: 24px; display: flex; align-items: center; gap: 5px;
+    padding: 0 8px; font-size: 11px; font-weight: 600; color: #55555a;
+    background: linear-gradient(#f2f2f2, #e9e9e9); border-bottom: 1px solid var(--line);
+    user-select: none;
+  }
+  .palette > header .chev { font-size: 8px; color: #8a8a8e; }
+  .palette.ghost > header { opacity: .75; }
+  .palette-body { padding: 6px 8px; }
+  .ghost-rows { display: flex; flex-direction: column; gap: 5px; }
+  .ghost-row { display: flex; justify-content: space-between; font-size: 11px; color: #9a9a9f; }
+  .ghost-row b { font-weight: 400; color: #6a6a6f; }
+  /* the palette under test */
+  #proofbook .palette-body { padding: 0; }
+  .pb { display: flex; flex-direction: column; max-height: 460px; }
+  .pb-scroll { overflow-y: auto; flex: 1; min-height: 120px; }
+  .row {
+    display: flex; align-items: center; gap: 4px; height: 21px;
+    padding: 0 6px; cursor: default; user-select: none; white-space: nowrap;
+  }
+  .row.sel { background: var(--sel); color: #fff; }
+  .row.sel .dim, .row.sel .owner, .row.sel .ext, .row.sel .affix { color: rgba(255,255,255,.8); }
+  .disc { width: 9px; font-size: 8px; color: #8a8a8e; flex: none; text-align: center; }
+  .row.sel .disc { color: #fff; }
+  .fold { color: #6f6f74; }
+  .name { overflow: hidden; text-overflow: ellipsis; }
+  .mono { font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace; }
+  .dim { color: var(--dim); }
+  .ext { color: #b5b5ba; }
+  .affix { font-weight: 600; }
+  .aff-TODO { color: var(--todo); } .aff-WIP { color: var(--wip); } .aff-DONE { color: var(--done); }
+  .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .sw-TODO { background: transparent; border: 1px solid #bcbcc1; }
+  .sw-WIP { background: var(--wip); } .sw-DONE { background: var(--done); }
+  .owner {
+    font: 9px/1 -apple-system, sans-serif; letter-spacing: .3px; color: #7a7a80;
+    border: 1px solid #cfcfd4; border-radius: 7px; padding: 2px 4px; flex: none;
+  }
+  .spacer { flex: 1; }
+  /* annotation area */
+  .anno {
+    border-top: 1px solid var(--line); background: #fff; padding: 6px 8px;
+    font-size: 11px; line-height: 1.35; color: #3a3a3f; max-height: 120px; overflow-y: auto;
+  }
+  .anno .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .6px; color: #a0a0a5; margin-bottom: 3px; }
+  .anno .file { font: 10px ui-monospace, Menlo, monospace; color: #8a8a8e; margin-top: 5px; word-break: break-all; }
+  .anno .none { color: #b0b0b5; font-style: italic; }
+  /* coverage bar */
+  .coverage { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .coverage .bar { height: 5px; border-radius: 3px; background: #e0e0e4; display: flex; overflow: hidden; }
+  .coverage .bar i { display: block; height: 100%; }
+  .coverage .cap { display: flex; justify-content: space-between; font-size: 9px; color: #8a8a8e; margin-top: 4px; }
+  /* breadcrumb (variant C) */
+  .crumb {
+    display: flex; align-items: center; gap: 3px; padding: 4px 6px; font-size: 11px;
+    border-bottom: 1px solid var(--line); color: #55555a; background: #f0f0f0;
+  }
+  .crumb a { color: var(--sel); text-decoration: none; cursor: pointer; }
+  .group {
+    font-size: 9px; letter-spacing: .6px; text-transform: uppercase; color: #96969b;
+    padding: 7px 8px 2px; display: flex; justify-content: space-between;
+  }
+  .toolbar {
+    display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+    border-top: 1px solid var(--line); background: #f0f0f0; font-size: 11px; color: #6a6a6f;
+  }
+  .toolbar button {
+    font: inherit; border: 1px solid #c8c8cd; background: #fff; border-radius: 4px;
+    padding: 1px 6px; cursor: pointer; color: #3a3a3f;
+  }
+  .seg { display: flex; border: 1px solid #c8c8cd; border-radius: 4px; overflow: hidden; }
+  .seg span { padding: 1px 5px; background: #fff; cursor: pointer; font-size: 10px; border-right: 1px solid #dcdce1; }
+  .seg span:last-child { border-right: 0; }
+  .seg span.on { background: var(--sel); color: #fff; }
+  /* empty states */
+  .empty { padding: 18px 12px; text-align: center; color: #8a8a8e; font-size: 11px; line-height: 1.5; }
+  .empty b { display: block; color: #55555a; font-size: 12px; margin-bottom: 4px; }
+  .empty button { margin-top: 9px; font: inherit; padding: 3px 9px; border-radius: 5px; border: 1px solid #c2c2c7; background: #fff; cursor: pointer; }
+  /* context menu */
+  #menu {
+    position: fixed; z-index: 50; min-width: 178px; background: rgba(250,250,250,.98);
+    border: 1px solid #c4c4c9; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.22);
+    padding: 4px; font-size: 12px; display: none;
+  }
+  #menu div { padding: 3px 9px; border-radius: 4px; cursor: default; display: flex; justify-content: space-between; gap: 12px; }
+  #menu div:hover { background: var(--sel); color: #fff; }
+  #menu div.sub { color: #8a8a8e; }
+  #menu hr { border: 0; border-top: 1px solid #dedee3; margin: 4px 6px; }
+  #menu .hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: #a0a0a5; padding: 4px 9px 2px; }
+  #menu .hdr:hover { background: none; color: #a0a0a5; }
+  /* switcher */
+  #switcher {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 100;
+    display: flex; align-items: center; gap: 4px; background: #16161a; color: #fff;
+    border-radius: 999px; padding: 5px 6px; box-shadow: 0 6px 22px rgba(0,0,0,.35);
+    font: 12px -apple-system, sans-serif;
+  }
+  #switcher button {
+    font: inherit; color: #fff; background: #33333a; border: 0; border-radius: 999px;
+    width: 26px; height: 26px; cursor: pointer;
+  }
+  #switcher .label { padding: 0 10px; min-width: 250px; text-align: center; }
+  #switcher .label i { color: #a0a0aa; font-style: normal; }
+  #switcher .states { display: flex; gap: 3px; margin-left: 6px; padding-left: 8px; border-left: 1px solid #3a3a42; }
+  #switcher .states span {
+    padding: 4px 9px; border-radius: 999px; background: #33333a; cursor: pointer; font-size: 11px;
+  }
+  #switcher .states span.on { background: #fff; color: #16161a; }
+  .note { position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+    font: 11px -apple-system, sans-serif; color: #5a5a60; background: rgba(255,255,255,.85);
+    padding: 3px 10px; border-radius: 999px; z-index: 100; }
+</style>
+</head>
+<body>
+  <div class="titlebar">
+    <div class="dot" style="background:#ff5f57"></div>
+    <div class="dot" style="background:#febc2e"></div>
+    <div class="dot" style="background:#28c840"></div>
+    <div class="doc-title">Nordlys-Regular.glyphs</div>
+  </div>
+  <div class="app">
+    <div class="canvas">
+      <div class="tabbar"><div class="tab">ProofBook — caps-and-numerals</div></div>
+      <div class="sample">HAMBURGEFONSTIV<br>0123456789</div>
+    </div>
+    <div class="sidebar">
+      <section class="palette ghost">
+        <header><span class="chev">▼</span> Dimensions</header>
+        <div class="palette-body"><div class="ghost-rows">
+          <div class="ghost-row"><span>Width</span><b>612</b></div>
+          <div class="ghost-row"><span>LSB</span><b>48</b></div>
+          <div class="ghost-row"><span>RSB</span><b>52</b></div>
+        </div></div>
+      </section>
+      <section class="palette" id="proofbook">
+        <header><span class="chev">▼</span> ProofBook</header>
+        <div class="palette-body"><div class="pb" id="pb"></div></div>
+      </section>
+      <section class="palette ghost">
+        <header><span class="chev">▶</span> Layers</header>
+      </section>
+      <section class="palette ghost">
+        <header><span class="chev">▶</span> Transformations</header>
+      </section>
+    </div>
+  </div>
+
+  <div id="menu"></div>
+  <div class="note" id="note"></div>
+  <div id="switcher">
+    <button id="prev">←</button>
+    <div class="label" id="vlabel"></div>
+    <button id="next">→</button>
+    <div class="states">
+      <span data-state="normal">proof-book</span>
+      <span data-state="none">no proof-book</span>
+      <span data-state="unsaved">unsaved font</span>
+    </div>
+  </div>
+
+<script>
+/* ---------------- mock proof-book on disk ---------------- */
+const BOOK = {
+  name: 'proofbook', type: 'folder', children: [
+    { name: 'latin', type: 'folder', children: [
+      { file: 'caps-and-numerals-WIP-NE.txt', anno: 'Numerals still feel narrow next to caps. Compare with the Cyrillic page before touching widths.' },
+      { file: 'lowercase-pairs-DONE-NE.txt', anno: '' },
+      { file: 'diacritics-TODO-MB.txt', anno: 'Waiting on the accent set. Only the Polish kreska is drawn.' },
+      { name: 'kerning', type: 'folder', children: [
+        { file: 'caps-to-lowercase-WIP-MB.txt', anno: 'Ta, Ty, Yo pairs are the ones to watch.' },
+        { file: 'punctuation-spacing-DONE-NE.txt', anno: '' },
+      ]},
+      { file: 'figures-old-style-vs-lining-WIP-NE.txt', anno: 'Hyphenated subject — proves the right-to-left filename parse.' },
+    ]},
+    { name: 'cyrillic', type: 'folder', children: [
+      { file: 'basic-cyrillic-TODO-NE.txt', anno: '' },
+      { file: 'ka-and-zhe-WIP-MB.txt', anno: 'Ж is doing too much. Try the narrower middle.' },
+    ]},
+    { file: 'common-words.txt', anno: 'Untagged — no status, no owner in the filename.' },
+    { file: 'pangrams-DONE-NE.txt', anno: '' },
+  ]
+};
+const STATUSES = ['TODO', 'WIP', 'DONE'];
+function parse(filename) {
+  const stem = filename.replace(/\.txt$/i, '');
+  const parts = stem.split('-');
+  let owner = null, status = null, subject = parts;
+  // parse right-to-left: [...subject]-STATUS-OWNER
+  if (parts.length >= 3 && STATUSES.includes(parts[parts.length - 2].toUpperCase())) {
+    owner = parts[parts.length - 1].toUpperCase();
+    status = parts[parts.length - 2].toUpperCase();
+    subject = parts.slice(0, -2);
+  }
+  return { file: filename, subject: subject.join('-'), status: status || 'TODO', owner, tagged: !!status };
+}
+function walk(node, depth, path, out) {
+  for (const c of node.children) {
+    if (c.type === 'folder') {
+      out.push({ kind: 'folder', name: c.name, depth, path: path.concat(c.name), node: c });
+      walk(c, depth + 1, path.concat(c.name), out);
+    } else {
+      out.push(Object.assign({ kind: 'page', depth, path, anno: c.anno }, parse(c.file)));
+    }
+  }
+  return out;
+}
+const FLAT = walk(BOOK, 0, [], []);
+const PAGES = FLAT.filter(r => r.kind === 'page');
+const counts = { TODO: 0, WIP: 0, DONE: 0 };
+PAGES.forEach(p => counts[p.status]++);
+
+/* ---------------- state ---------------- */
+const params = new URLSearchParams(location.search);
+let variant = (params.get('variant') || 'A').toUpperCase();
+let uiState = params.get('state') || 'normal';
+let selected = 'caps-and-numerals-WIP-NE.txt';
+let folder = [];              // variant C breadcrumb position
+let annoOpen = false;         // variant A: annotation drawer
+
+const VARIANTS = {
+  A: 'Filenames, nothing else',
+  B: 'Parsed rows, status as a click target',
+  C: 'One folder at a time, grouped by status',
+  D: 'Filename with the affixes styled',
+};
+
+/* ---------------- helpers ---------------- */
+const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+function indent(n, depth, extra = 0) { n.style.paddingLeft = (6 + depth * 11 + extra) + 'px'; }
+function selectPage(row) { selected = row.file; render(); }
+function findPage(file) { return PAGES.find(p => p.file === file); }
+
+function coverageBar() {
+  const wrap = el('div', 'coverage');
+  const bar = el('div', 'bar');
+  ['DONE', 'WIP'].forEach(s => {
+    const i = el('i'); i.style.width = (counts[s] / PAGES.length * 100) + '%';
+    i.style.background = s === 'DONE' ? 'var(--done)' : 'var(--wip)';
+    bar.appendChild(i);
+  });
+  wrap.appendChild(bar);
+  const cap = el('div', 'cap');
+  cap.appendChild(el('span', null, `${counts.DONE} of ${PAGES.length} done`));
+  cap.appendChild(el('span', null, `${counts.WIP} wip · ${counts.TODO} todo`));
+  wrap.appendChild(cap);
+  return wrap;
+}
+function annoPane(showFilename) {
+  const p = findPage(selected);
+  const box = el('div', 'anno');
+  box.appendChild(el('div', 'lbl', 'Annotation'));
+  if (!p) { box.appendChild(el('div', 'none', 'No proof-page selected.')); return box; }
+  box.appendChild(p.anno ? el('div', null, p.anno) : el('div', 'none', 'None. Double-click to write one.'));
+  if (showFilename) box.appendChild(el('div', 'file', p.path.concat(p.file).join('/')));
+  return box;
+}
+function toolbar(extra) {
+  const t = el('div', 'toolbar');
+  const b = el('button', null, '+ New proof-page'); t.appendChild(b);
+  t.appendChild(el('div', 'spacer'));
+  if (extra) t.appendChild(extra);
+  return t;
+}
+
+/* ---------------- context menu ---------------- */
+const menu = document.getElementById('menu');
+function openMenu(e, row, opts) {
+  e.preventDefault();
+  menu.innerHTML = '';
+  const add = (label, hint, cls) => { const d = el('div', cls); d.appendChild(el('span', null, label)); if (hint) d.appendChild(el('span', 'dim', hint)); menu.appendChild(d); };
+  if (row && row.kind === 'page') {
+    if (opts.statusInMenu) {
+      menu.appendChild(el('div', 'hdr', 'Status (renames the file)'));
+      STATUSES.forEach(s => add((row.status === s ? '✓ ' : '   ') + s, null));
+      menu.appendChild(el('hr'));
+    }
+    menu.appendChild(el('div', 'hdr', 'Owner (renames the file)'));
+    ['NE', 'MB', 'none'].forEach(o => add((row.owner === o ? '✓ ' : '   ') + o));
+    menu.appendChild(el('hr'));
+    add('Edit annotation…');
+    add('Rename…');
+    add('Move to…');
+    add('Duplicate');
+    menu.appendChild(el('hr'));
+    add('Reveal in Finder');
+    add('Delete', '⌫');
+  } else {
+    add('New proof-page…');
+    add('New folder…');
+    menu.appendChild(el('hr'));
+    add('Rename…'); add('Move to…'); add('Delete');
+    menu.appendChild(el('hr'));
+    add('Reveal in Finder');
+  }
+  menu.style.display = 'block';
+  menu.style.left = Math.min(e.clientX, innerWidth - 200) + 'px';
+  menu.style.top = e.clientY + 'px';
+}
+addEventListener('mousedown', e => { if (!menu.contains(e.target)) menu.style.display = 'none'; });
+
+/* ---------------- empty states ---------------- */
+function emptyState() {
+  const box = el('div', 'empty');
+  if (uiState === 'unsaved') {
+    box.appendChild(el('b', null, 'Font not saved'));
+    box.appendChild(el('div', null, 'A proof-book lives beside the .glyphs file. Save the font to give it somewhere to go.'));
+  } else {
+    box.appendChild(el('b', null, 'No proof-book yet'));
+    box.appendChild(el('div', null, 'A folder named proofbook will be created beside Nordlys-Regular.glyphs.'));
+    const b = el('button', null, 'Create proof-book'); box.appendChild(b);
+  }
+  return box;
+}
+
+/* ---------------- variant A: raw filenames ---------------- */
+function variantA() {
+  const pb = el('div', 'pb');
+  const scroll = el('div', 'pb-scroll');
+  FLAT.forEach(r => {
+    const row = el('div', 'row');
+    indent(row, r.depth);
+    if (r.kind === 'folder') {
+      row.appendChild(el('span', 'disc', '▼'));
+      row.appendChild(el('span', 'name mono fold', r.name + '/'));
+    } else {
+      row.appendChild(el('span', 'disc', ''));
+      const n = el('span', 'name mono');
+      n.appendChild(el('span', null, r.file.replace(/\.txt$/, '')));
+      n.appendChild(el('span', 'ext', '.txt'));
+      row.appendChild(n);
+      if (r.file === selected) row.classList.add('sel');
+      row.onclick = () => selectPage(r);
+    }
+    row.oncontextmenu = e => openMenu(e, r, { statusInMenu: true });
+    row.title = r.kind === 'page' ? r.file : r.name;
+    scroll.appendChild(row);
+  });
+  pb.appendChild(scroll);
+  const toggle = el('button', null, annoOpen ? 'Hide annotation' : 'Show annotation');
+  toggle.onclick = () => { annoOpen = !annoOpen; render(); };
+  pb.appendChild(toolbar(toggle));
+  if (annoOpen) pb.appendChild(annoPane(false));
+  return pb;
+}
+
+/* ---------------- variant B: parsed rows ---------------- */
+function variantB() {
+  const pb = el('div', 'pb');
+  pb.appendChild(coverageBar());
+  const scroll = el('div', 'pb-scroll');
+  FLAT.forEach(r => {
+    const row = el('div', 'row');
+    indent(row, r.depth);
+    if (r.kind === 'folder') {
+      row.appendChild(el('span', 'disc', '▼'));
+      row.appendChild(el('span', 'name fold', r.name));
+    } else {
+      const sw = el('span', 'swatch sw-' + r.status);
+      sw.title = 'Click to cycle status — renames the file';
+      sw.onclick = e => { e.stopPropagation(); alert('Cycles ' + r.status + ' → ' + STATUSES[(STATUSES.indexOf(r.status) + 1) % 3] + '\n\nRenames the file on disk.'); };
+      row.appendChild(sw);
+      row.appendChild(el('span', 'name', r.subject.replace(/-/g, ' ')));
+      row.appendChild(el('span', 'spacer'));
+      if (r.owner) row.appendChild(el('span', 'owner', r.owner));
+      if (r.file === selected) row.classList.add('sel');
+      row.onclick = () => selectPage(r);
+      row.title = r.file;
+    }
+    row.oncontextmenu = e => openMenu(e, r, { statusInMenu: false });
+    scroll.appendChild(row);
+  });
+  pb.appendChild(scroll);
+  pb.appendChild(annoPane(true));
+  pb.appendChild(toolbar());
+  return pb;
+}
+
+/* ---------------- variant C: drill-down, grouped by status ---------------- */
+function variantC() {
+  const pb = el('div', 'pb');
+  // resolve current folder
+  let node = BOOK;
+  folder.forEach(seg => { node = node.children.find(c => c.type === 'folder' && c.name === seg); });
+  const crumb = el('div', 'crumb');
+  const root = el('a', null, 'proofbook'); root.onclick = () => { folder = []; render(); };
+  crumb.appendChild(root);
+  folder.forEach((seg, i) => {
+    crumb.appendChild(el('span', 'dim', '›'));
+    if (i === folder.length - 1) crumb.appendChild(el('span', null, seg));
+    else { const a = el('a', null, seg); a.onclick = () => { folder = folder.slice(0, i + 1); render(); }; crumb.appendChild(a); }
+  });
+  pb.appendChild(crumb);
+
+  const scroll = el('div', 'pb-scroll');
+  const folders = node.children.filter(c => c.type === 'folder');
+  const pages = node.children.filter(c => !c.type).map(c => Object.assign(parse(c.file), { anno: c.anno, kind: 'page', path: folder }));
+  folders.forEach(f => {
+    const row = el('div', 'row');
+    indent(row, 0);
+    row.appendChild(el('span', 'disc', '▶'));
+    row.appendChild(el('span', 'name fold', f.name));
+    row.appendChild(el('span', 'spacer'));
+    const sub = walk(f, 0, [], []).filter(x => x.kind === 'page');
+    row.appendChild(el('span', 'dim', sub.filter(p => p.status === 'DONE').length + '/' + sub.length));
+    row.onclick = () => { folder = folder.concat(f.name); render(); };
+    row.oncontextmenu = e => openMenu(e, { kind: 'folder' }, {});
+    scroll.appendChild(row);
+  });
+  STATUSES.forEach(s => {
+    const inGroup = pages.filter(p => p.status === s);
+    if (!inGroup.length) return;
+    const g = el('div', 'group');
+    g.appendChild(el('span', null, s));
+    g.appendChild(el('span', null, String(inGroup.length)));
+    scroll.appendChild(g);
+    inGroup.forEach(r => {
+      const row = el('div', 'row');
+      indent(row, 0, 3);
+      row.appendChild(el('span', 'name', r.subject.replace(/-/g, ' ')));
+      row.appendChild(el('span', 'spacer'));
+      if (r.owner) row.appendChild(el('span', 'owner', r.owner));
+      if (r.file === selected) row.classList.add('sel');
+      row.onclick = () => selectPage(r);
+      row.oncontextmenu = e => openMenu(e, r, { statusInMenu: true });
+      row.title = r.file + '  (drag between groups to retag)';
+      scroll.appendChild(row);
+    });
+  });
+  pb.appendChild(scroll);
+  pb.appendChild(annoPane(true));
+  pb.appendChild(toolbar());
+  return pb;
+}
+
+/* ---------------- variant D: filename with styled affixes ---------------- */
+function variantD() {
+  const pb = el('div', 'pb');
+  pb.appendChild(coverageBar());
+  const scroll = el('div', 'pb-scroll');
+  FLAT.forEach(r => {
+    const row = el('div', 'row');
+    indent(row, r.depth);
+    if (r.kind === 'folder') {
+      row.appendChild(el('span', 'disc', '▼'));
+      row.appendChild(el('span', 'name mono fold', r.name + '/'));
+    } else {
+      row.appendChild(el('span', 'disc', ''));
+      const n = el('span', 'name mono');
+      n.appendChild(el('span', null, r.subject));
+      if (r.tagged) {
+        n.appendChild(el('span', 'dim', '-'));
+        n.appendChild(el('span', 'affix aff-' + r.status, r.status));
+        n.appendChild(el('span', 'dim', '-'));
+        n.appendChild(el('span', 'owner-inline dim', r.owner));
+      }
+      n.appendChild(el('span', 'ext', '.txt'));
+      row.appendChild(n);
+      if (r.file === selected) row.classList.add('sel');
+      row.onclick = () => selectPage(r);
+      row.title = r.file;
+    }
+    row.oncontextmenu = e => openMenu(e, r, { statusInMenu: true });
+    scroll.appendChild(row);
+  });
+  pb.appendChild(scroll);
+  pb.appendChild(annoPane(false));
+  pb.appendChild(toolbar());
+  return pb;
+}
+
+/* ---------------- render ---------------- */
+const RENDER = { A: variantA, B: variantB, C: variantC, D: variantD };
+function render() {
+  const host = document.getElementById('pb');
+  host.replaceWith(Object.assign(
+    uiState === 'normal' ? RENDER[variant]() : (() => { const p = el('div', 'pb'); p.appendChild(emptyState()); return p; })(),
+    { id: 'pb' }
+  ));
+  document.getElementById('vlabel').innerHTML = variant + ' <i>' + VARIANTS[variant] + '</i>';
+  document.querySelectorAll('#switcher .states span').forEach(s => s.classList.toggle('on', s.dataset.state === uiState));
+  document.getElementById('note').textContent =
+    uiState === 'normal' ? 'Right-click a row for the context menu. Sidebar is 240px, the palette column ~200px — real width.'
+                         : 'Empty state — same in every variant unless you change it.';
+  const u = new URL(location); u.searchParams.set('variant', variant); u.searchParams.set('state', uiState);
+  history.replaceState({}, '', u);
+}
+const keys = Object.keys(VARIANTS);
+function cycle(d) { variant = keys[(keys.indexOf(variant) + d + keys.length) % keys.length]; render(); }
+document.getElementById('prev').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+document.querySelectorAll('#switcher .states span').forEach(s => s.onclick = () => { uiState = s.dataset.state; render(); });
+addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+render();
+</script>
+</body>
+</html>
