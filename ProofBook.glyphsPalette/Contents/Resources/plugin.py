@@ -82,6 +82,13 @@ PALETTE_WIDTH = 180
 PALETTE_MIN_HEIGHT = 180
 PALETTE_MAX_HEIGHT = 400
 
+# The strip along the foot of the palette that Glyphs resizes by. Read off
+# `-[GSPaletteView mouseDown:]`, which converts the click into view
+# coordinates and returns unless `y < 5.0`; `drawRect:` fills a 28x3 pill at
+# `y = 2` there. Content laid over it takes the drag instead, which is a
+# palette whose handle is invisible and whose drag selects a row.
+RESIZE_STRIP_HEIGHT = 5
+
 # The SDK stores the dragged height under `self.name + ".ViewHeight"`, and
 # `self.name` is localised — so a designer switching Glyphs to German would
 # silently start again from the default. Keyed off the bundle identifier
@@ -188,13 +195,25 @@ class ProofBookPalette(PalettePlugin):
 		whatever `getNSView()` returned — fails that call silently and is
 		drawn at a fixed height with no handle and no complaint.
 
-		The content keeps its own layout; it is resized by the autoresizing
-		mask as the designer drags.
+		The palette keeps the content's height, and the content is inset to
+		leave the resize strip along the foot clear — `GSPaletteView` is
+		unflipped, so that is `y = 0` to `RESIZE_STRIP_HEIGHT`. Both margins
+		stay fixed and the height flexes, so the strip survives the drag.
 		"""
 		if GSPaletteView is None:
 			return content
-		palette = GSPaletteView.alloc().initWithFrame_(content.frame())
-		content.setFrameOrigin_((0, 0))
+		size = content.frame().size
+		palette = GSPaletteView.alloc().initWithFrame_(
+			NSMakeRect(0, 0, size.width, size.height)
+		)
+		content.setFrame_(
+			NSMakeRect(
+				0,
+				RESIZE_STRIP_HEIGHT,
+				size.width,
+				size.height - RESIZE_STRIP_HEIGHT,
+			)
+		)
 		content.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
 		palette.addSubview_(content)
 		return palette
