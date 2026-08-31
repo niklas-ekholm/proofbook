@@ -26,9 +26,7 @@ ln -s "$PWD/ProofBook.glyphsPalette" ~/"Library/Application Support/Glyphs 4/Plu
 ls ~/"Library/Application Support/Glyphs 4/Plugins/ProofBook.glyphsPalette/Contents/"
 ```
 
-Run that second command. A **broken symlink fails completely silently** — no dialog, no log, indistinguishable from the plugin not being installed.
-
-Editing the plugin means quitting and relaunching Glyphs; *Reload Scripts* does not pick up plugin changes, and a palette only instantiates once a document window is open.
+Run that second command: a broken symlink fails completely silently, which is indistinguishable from the plugin not being installed. `docs/spec/proofbook-mvp.md` §10 has the rest of the install and edit-test notes.
 
 ## Tests
 

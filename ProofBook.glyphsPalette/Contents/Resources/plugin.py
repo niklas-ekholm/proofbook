@@ -11,8 +11,8 @@ The repo *is* the bundle: there is no build step and no copy to forget. This
 file puts its own directory on sys.path so `import proofbook` resolves inside
 the bundle regardless of how Glyphs invokes it.
 
-Flip PROOFBOOK_FORCE_NO_VANILLA to True to exercise the AppKit fallback view
-without uninstalling vanilla.
+Flip PROOFBOOK_FORCE_NO_VANILLA to True to raise the ImportError for real and
+exercise the AppKit fallback view without uninstalling vanilla.
 """
 
 from __future__ import annotations
@@ -26,9 +26,12 @@ from AppKit import NSFont, NSMakeRect, NSTextField, NSView
 from GlyphsApp import Glyphs
 from GlyphsApp.plugins import PalettePlugin
 
+# Appended, never inserted at 0: this is the shared Glyphs interpreter, every
+# palette ships a Resources/plugin.py, and the front of sys.path would let this
+# bundle shadow stdlib names and other plugins' modules process-wide.
 _BUNDLE_RESOURCES = os.path.dirname(os.path.abspath(__file__))
 if _BUNDLE_RESOURCES not in sys.path:
-	sys.path.insert(0, _BUNDLE_RESOURCES)
+	sys.path.append(_BUNDLE_RESOURCES)
 
 import proofbook  # noqa: E402  (only importable once sys.path is set, above)
 
@@ -37,11 +40,10 @@ PROOFBOOK_FORCE_NO_VANILLA = False
 # Guard at module scope, never inside PalettePlugin.init — the SDK calls
 # settings() and start() from init unguarded (see issue #8).
 try:
+	if PROOFBOOK_FORCE_NO_VANILLA:
+		raise ImportError("PROOFBOOK_FORCE_NO_VANILLA")
 	import vanilla
 except ImportError:
-	vanilla = None
-
-if PROOFBOOK_FORCE_NO_VANILLA:
 	vanilla = None
 
 

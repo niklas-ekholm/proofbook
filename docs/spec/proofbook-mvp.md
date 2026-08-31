@@ -48,15 +48,17 @@ ProofBook.glyphsPalette/Contents/     at the repository root
 tests/                    unittest suite over the core
 ```
 
-**The core ships inside the bundle.** No build step, no symlink: the repo *is* the bundle, and the bundle sits at the repository root, so the symlink in `Plugins/` points at the clone itself. `plugin.py` inserts its own directory into `sys.path` before importing `proofbook`.
+**The core ships inside the bundle.** No build step, no symlink: the repo *is* the bundle, and the bundle sits at the repository root, so the symlink in `Plugins/` points at the clone itself. `plugin.py` puts its own directory on `sys.path` before importing `proofbook`. It **appends**, never inserting at the front: the Glyphs interpreter is shared, and every palette ships a `Resources/plugin.py` that the front of `sys.path` would let this bundle shadow process-wide.
 
-The `sys.path` insert was the one mechanical assumption not verified against the `Glyphs4` SDK; #14 stood the seam up and the palette now draws a string it obtained from the core. `tests/test_bundle_layout.py` reads `plugin.py` with `ast` to hold the two rules that cannot be checked from outside Glyphs: the insert precedes the `import proofbook`, and the `try: import vanilla` guard is still at module scope.
+*(This `sys.path` append is the one mechanical assumption not yet verified against the `Glyphs4` SDK — confirm it early. The palette draws a string it got from the core precisely so that loading it once in Glyphs 4 settles the question.)*
+
+`tests/test_bundle_layout.py` parses `plugin.py` to hold the two rules nothing outside Glyphs can check: the `sys.path` call precedes the `import proofbook`, and the `try: import vanilla` guard is still at module scope.
 
 No `.xib` and no `.nib`. They are optional in Glyphs 4 and are not used.
 
 ### Tests
 
-Stdlib `unittest`, run as `python3 -m unittest discover tests` with no install step and no Glyphs. Tests touch no filesystem. The suite must cover, at minimum:
+Stdlib `unittest`, run as `python3 -m unittest discover tests` with no install step and no Glyphs. **Tests build nothing on the filesystem** — no temp directories, no proof-book fixtures; the core is fed listings as data. The one exception is the bundle's own source, which the layout tests read in place. The suite must cover, at minimum:
 
 - All three legal filename shapes, plus a subject containing hyphens, plus case-insensitive status matching, plus a name that fits no shape.
 - Frontmatter round-trips: canonical in → canonical out; lenient forms (one-line `note:`, odd indent) normalising on write; unknown keys preserved in order with the note block last; malformed input flagged read-only and never rewritten; line endings preserved; body passed through byte-for-byte.

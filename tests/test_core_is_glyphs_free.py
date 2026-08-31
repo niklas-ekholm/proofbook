@@ -4,11 +4,12 @@ Enforced by reading the source rather than by importing, so a module that is
 never imported by any other test still cannot smuggle in a forbidden import.
 """
 
-import ast
 import os
+import sys
 import unittest
 
 import corepath
+import pysource
 
 FORBIDDEN = {"GlyphsApp", "AppKit", "vanilla", "objc", "Foundation", "Cocoa"}
 
@@ -23,18 +24,6 @@ def _core_modules():
 				yield os.path.join(dirpath, filename)
 
 
-def _imported_roots(path):
-	with open(path, encoding="utf-8") as handle:
-		tree = ast.parse(handle.read(), filename=path)
-	for node in ast.walk(tree):
-		if isinstance(node, ast.Import):
-			for alias in node.names:
-				yield alias.name.split(".")[0]
-		elif isinstance(node, ast.ImportFrom):
-			if node.level == 0 and node.module:
-				yield node.module.split(".")[0]
-
-
 class CoreIsGlyphsFree(unittest.TestCase):
 	def test_the_package_has_modules_to_check(self):
 		self.assertTrue(list(_core_modules()), "found no core modules to check")
@@ -42,13 +31,11 @@ class CoreIsGlyphsFree(unittest.TestCase):
 	def test_no_module_imports_a_glyphs_only_name(self):
 		for path in _core_modules():
 			with self.subTest(module=os.path.relpath(path, corepath.CORE_DIR)):
-				offenders = FORBIDDEN.intersection(_imported_roots(path))
-				self.assertEqual(offenders, set())
+				roots = pysource.imported_roots(pysource.parse(path))
+				self.assertEqual(FORBIDDEN.intersection(roots), set())
 
 	def test_importing_the_core_pulls_in_no_glyphs_only_name(self):
 		import proofbook  # noqa: F401
-
-		import sys
 
 		self.assertEqual(FORBIDDEN.intersection(sys.modules), set())
 
