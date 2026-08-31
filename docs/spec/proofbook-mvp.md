@@ -50,7 +50,7 @@ tests/                    unittest suite over the core
 
 **The core ships inside the bundle.** No build step, no symlink: the repo *is* the bundle, and the bundle sits at the repository root, so the symlink in `Plugins/` points at the clone itself. `plugin.py` puts its own directory on `sys.path` before importing `proofbook`. It **appends**, never inserting at the front: the Glyphs interpreter is shared, and every palette ships a `Resources/plugin.py` that the front of `sys.path` would let this bundle shadow process-wide.
 
-*(This `sys.path` append is the one mechanical assumption not yet verified against the `Glyphs4` SDK — confirm it early. The palette draws a string it got from the core precisely so that loading it once in Glyphs 4 settles the question.)*
+*(**Verified in Glyphs 4**: the palette draws `core 0.0.1`, a string that only exists if the append resolved and the core imported. Runtime confirmed as Python 3.14.6, vanilla present. This was the last mechanical assumption in the architecture; it is no longer open.)*
 
 `tests/test_bundle_layout.py` parses `plugin.py` to hold the two rules nothing outside Glyphs can check: the `sys.path` call precedes the `import proofbook`, and the `try: import vanilla` guard is still at module scope.
 
