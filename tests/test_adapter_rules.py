@@ -40,7 +40,13 @@ FILESYSTEM_CALLS = {
 # `start` is included: the first resolve is deferred to the next runloop turn,
 # because `start` runs from `init`, before Glyphs has handed the palette its
 # window controller.
-LOAD_TIME_METHODS = ["settings", "_vanilla_view", "_appkit_view", "start"]
+LOAD_TIME_METHODS = [
+	"settings",
+	"_vanilla_view",
+	"_appkit_view",
+	"_palette_view",
+	"start",
+]
 
 # The palette's height range, set where the SDK reads it from.
 HEIGHT_BOUNDS = [
@@ -196,6 +202,18 @@ class AdapterRules(unittest.TestCase):
 			pysource.called_names(self.adapter),
 			"a delayed perform outlives the window and holds a reference",
 		)
+
+	def test_the_view_handed_to_glyphs_is_the_one_glyphs_resizes(self):
+		# GSPaletteView is the resize handle. The SDK calls setController_ on
+		# theView() inside a bare except, so handing over a plain view is a
+		# silent failure: the palette loads, draws, and cannot be dragged.
+		self.assertIn(
+			"GSPaletteView",
+			pysource.referenced_names(self.adapter),
+			"the palette no longer wraps its view in GSPaletteView",
+		)
+		settings = pysource.function(self.adapter, "settings")
+		self.assertIn("self._palette_view", pysource.called_names(settings))
 
 	def test_the_palette_installs_no_context_menu(self):
 		# Neither empty state offers one, and there are no rows to target

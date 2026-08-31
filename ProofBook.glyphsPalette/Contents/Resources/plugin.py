@@ -28,11 +28,20 @@ from AppKit import (
 	NSNotificationCenter,
 	NSTextField,
 	NSView,
+	NSViewHeightSizable,
+	NSViewWidthSizable,
 	NSWindowDidBecomeKeyNotification,
 )
 from Foundation import NSObject
 from GlyphsApp import DOCUMENTWASSAVED, Glyphs
 from GlyphsApp.plugins import PalettePlugin
+
+# The view class Glyphs resizes. Guarded like the vanilla import: a rename in
+# a future Glyphs should cost the resize handle, not the whole palette.
+try:
+	from GlyphsApp.plugins import GSPaletteView
+except ImportError:
+	GSPaletteView = None
 
 # Appended, never inserted at 0: this is the shared Glyphs interpreter, every
 # palette ships a Resources/plugin.py, and the front of sys.path would let this
@@ -162,9 +171,33 @@ class ProofBookPalette(PalettePlugin):
 		self.settingSelection = False
 
 		if vanilla is not None:
-			self.dialog = self._vanilla_view()
+			content = self._vanilla_view()
 		else:
-			self.dialog = self._appkit_view()
+			content = self._appkit_view()
+		self.dialog = self._palette_view(content)
+
+	@objc.python_method
+	def _palette_view(self, content):
+		"""Wrap the built view in the class Glyphs resizes.
+
+		`GSPaletteView` carries `_draggingStart`, `_originalHeight` and
+		`_isResizing`: it is not a container Glyphs happens to use, it *is*
+		the resize handle. The SDK's `init` casts `theView()` to it and calls
+		`setController_` inside a bare `except: pass`, so a palette that hands
+		over a plain view — which is every vanilla palette, the view being
+		whatever `getNSView()` returned — fails that call silently and is
+		drawn at a fixed height with no handle and no complaint.
+
+		The content keeps its own layout; it is resized by the autoresizing
+		mask as the designer drags.
+		"""
+		if GSPaletteView is None:
+			return content
+		palette = GSPaletteView.alloc().initWithFrame_(content.frame())
+		content.setFrameOrigin_((0, 0))
+		content.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+		palette.addSubview_(content)
+		return palette
 
 	@objc.python_method
 	def _vanilla_view(self):
