@@ -131,6 +131,7 @@ class ProofBookPalette(PalettePlugin):
 
 		# Per-palette-instance and in-memory (spec §6): nothing is shared
 		# across windows and nothing survives a window close.
+		self.bookPath = None
 		self.entries = []
 		self.rows = []
 		self.expanded = set()
@@ -330,10 +331,18 @@ class ProofBookPalette(PalettePlugin):
 		# An unsaved font never reaches the disk: there is nothing to stat.
 		folder_exists = path is not None and os.path.isdir(path)
 		self.resolution = discovery.resolve(filepath, folder_exists)
+		book = None
 		if self.resolution.kind == discovery.PROOF_BOOK:
-			self.entries = self._listing(self.resolution.path)
-		else:
-			self.entries = []
+			book = self.resolution.path
+		if book != self.bookPath:
+			# A different proof-book, or none: an expansion set and a
+			# selection are about the book they were made in, and a Save As
+			# into a folder with no proof-book must not carry them forward.
+			self.bookPath = book
+			self.expanded = set()
+			self.selectedPath = None
+		self.entries = self._listing(book) if book else []
+		self.selectedPath = tree.selection_after(self.selectedPath, self.entries)
 		self._draw()
 
 	@objc.python_method
@@ -348,7 +357,7 @@ class ProofBookPalette(PalettePlugin):
 		entries = []
 		for dirpath, dirnames, filenames in os.walk(root):
 			relative = os.path.relpath(dirpath, root)
-			prefix = "" if relative == os.curdir else relative + tree.SEPARATOR
+			prefix = "" if relative == os.curdir else relative + tree.PATH_SEPARATOR
 			for name in dirnames:
 				entries.append(tree.Entry(prefix + name, True))
 			for name in filenames:
@@ -404,11 +413,6 @@ class ProofBookPalette(PalettePlugin):
 			group.tree.setSelectedIndexes(selected)
 		finally:
 			self.settingSelection = False
-		# The selected page can vanish from under the selection — an external
-		# delete, or a rename read as a delete plus an add. Clearing the
-		# selection is issue #20's business; noticing it is free here.
-		if not selected:
-			self.selectedPath = None
 
 	@objc.python_method
 	def _alert(self, message):

@@ -32,7 +32,7 @@ STATUSES = (TODO, WIP, DONE)
 
 EXTENSION = ".txt"
 
-SEPARATOR = "-"
+SEGMENT_SEPARATOR = "-"
 
 OWNER_MAX_LETTERS = 4
 
@@ -56,17 +56,15 @@ def is_proof_page(filename):
 
 def is_owner(text):
 	"""Is this an owner? One to four letters — no digits, hyphens or spaces."""
-	return (
-		1 <= len(text) <= OWNER_MAX_LETTERS
-		and text.isalpha()
-		and SEPARATOR not in text
-	)
+	# `isalpha` carries the whole rule: it excludes digits, spaces and the
+	# separator itself, which is what keeps an owner inside one segment.
+	return 1 <= len(text) <= OWNER_MAX_LETTERS and text.isalpha()
 
 
 def parse(filename):
 	"""Read a proof-page's subject, status and owner out of its filename."""
 	stem, _ = _split_extension(filename)
-	segments = stem.split(SEPARATOR)
+	segments = stem.split(SEGMENT_SEPARATOR)
 
 	# Longest shape first: an owner only exists in the position after a status.
 	if len(segments) >= 3 and is_owner(segments[-1]):
@@ -101,12 +99,12 @@ def filename(subject, status=TODO, owner=None, tagged=True):
 		segments.append(status.upper())
 	if owner is not None:
 		segments.append(owner.upper())
-	return SEPARATOR.join(segments) + EXTENSION
+	return SEGMENT_SEPARATOR.join(segments) + EXTENSION
 
 
-def display(subject):
+def display_subject(subject):
 	"""The subject as the palette draws it: hyphens rendered as spaces."""
-	return subject.replace(SEPARATOR, " ")
+	return subject.replace(SEGMENT_SEPARATOR, " ")
 
 
 def _split_extension(filename):
@@ -124,4 +122,4 @@ def _status(segment):
 
 
 def _joined(segments):
-	return SEPARATOR.join(segments)
+	return SEGMENT_SEPARATOR.join(segments)

@@ -113,6 +113,12 @@ class Owners(unittest.TestCase):
 	def test_nothing_is_not(self):
 		self.assertFalse(names.is_owner(""))
 
+	def test_letters_outside_ascii_are_still_letters(self):
+		# "1-4 letters" is read as written. A designer whose initials are ÅE
+		# gets their initials; the closed status set, not the owner shape, is
+		# what keeps `caps-ink.txt` from being read as owned.
+		self.assertTrue(names.is_owner("ÅE"))
+
 	def test_digits_spaces_and_hyphens_are_not(self):
 		for rejected in ("N3", "N E", "N-E", "2"):
 			with self.subTest(owner=rejected):
@@ -186,10 +192,10 @@ class Membership(unittest.TestCase):
 
 class Display(unittest.TestCase):
 	def test_hyphens_render_as_spaces(self):
-		self.assertEqual(names.display("common-words"), "common words")
+		self.assertEqual(names.display_subject("common-words"), "common words")
 
 	def test_a_subject_without_hyphens_is_unchanged(self):
-		self.assertEqual(names.display("caps"), "caps")
+		self.assertEqual(names.display_subject("caps"), "caps")
 
 
 if __name__ == "__main__":

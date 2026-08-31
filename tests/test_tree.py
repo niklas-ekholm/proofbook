@@ -153,6 +153,19 @@ class RowContent(unittest.TestCase):
 		self.assertIsNone(row.owner)
 		self.assertEqual(row.subject, "caps")
 
+	def test_a_folder_name_renders_its_hyphens_as_spaces_too(self):
+		# One column, one reading of a hyphen: `small-caps/` and
+		# `small-caps.txt` must not draw the same string two ways.
+		(folder,) = tree.flatten(listing("small-caps/"))
+		(page,) = tree.flatten(listing("small-caps.txt"))
+		self.assertEqual(folder.subject, "small caps")
+		self.assertEqual(folder.subject, page.subject)
+
+	def test_a_folder_row_keeps_its_raw_name_for_the_tooltip(self):
+		(row,) = tree.flatten(listing("small-caps/"))
+		self.assertEqual(row.filename, "small-caps")
+		self.assertEqual(row.path, "small-caps")
+
 	def test_a_folder_row_reports_whether_it_is_expanded(self):
 		(collapsed,) = tree.flatten(listing("caps/"))
 		self.assertFalse(collapsed.expanded)
@@ -162,6 +175,26 @@ class RowContent(unittest.TestCase):
 	def test_a_page_row_is_never_expanded(self):
 		(row,) = tree.flatten(listing("caps.txt"))
 		self.assertIsNone(row.expanded)
+
+
+class Selection(unittest.TestCase):
+	BOOK = listing("caps/", "caps/pairs.txt", "words.txt")
+
+	def test_collapsing_a_folder_does_not_lose_the_selection(self):
+		# Expansion decides what is drawn, never what is selected: the page
+		# is still in the listing, so re-expanding finds it selected.
+		self.assertEqual(
+			tree.selection_after("caps/pairs.txt", self.BOOK), "caps/pairs.txt"
+		)
+
+	def test_a_page_that_has_left_the_listing_takes_the_selection_with_it(self):
+		self.assertIsNone(tree.selection_after("caps/gone.txt", self.BOOK))
+
+	def test_an_empty_selection_stays_empty(self):
+		self.assertIsNone(tree.selection_after(None, self.BOOK))
+
+	def test_an_emptied_proof_book_clears_the_selection(self):
+		self.assertIsNone(tree.selection_after("words.txt", []))
 
 
 class Expansion(unittest.TestCase):

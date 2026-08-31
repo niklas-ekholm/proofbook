@@ -14,7 +14,7 @@ from collections import namedtuple
 
 from . import names
 
-SEPARATOR = "/"
+PATH_SEPARATOR = "/"
 
 #: One entry from the adapter's walk of the proof-book. A folder needs no
 #: listing of its own to appear: `flatten` infers the parents of every path it
@@ -40,6 +40,21 @@ def flatten(entries, expanded=()):
 	return rows
 
 
+def selection_after(selected, entries):
+	"""The selection that survives this listing.
+
+	A page hidden inside a collapsed folder has not gone anywhere, which is
+	why this asks the listing and not the rows. A page that has left the
+	listing — deleted in Finder, or renamed, which reads as a delete plus an
+	add (spec §6) — takes the selection with it.
+	"""
+	if selected is None:
+		return None
+	if any(entry.path == selected for entry in entries):
+		return selected
+	return None
+
+
 def toggled(expanded, path):
 	"""The expansion set with this folder flipped. The argument is untouched."""
 	folders = set(expanded)
@@ -51,7 +66,7 @@ def _children_of(entries):
 	"""Grow a nested `{name: (is_dir, children)}` tree from flat paths."""
 	root = {}
 	for entry in entries:
-		segments = [part for part in entry.path.split(SEPARATOR) if part]
+		segments = [part for part in entry.path.split(PATH_SEPARATOR) if part]
 		if not segments:
 			continue
 		node = root
@@ -70,11 +85,23 @@ def _emit(children, prefix, depth, expanded, rows):
 		path = prefix + name
 		if is_dir:
 			is_expanded = path in expanded
+			# A folder's name is rendered like a subject — one column, one
+			# reading of a hyphen. The raw name stays on the row as the
+			# tooltip, so nothing about the folder on disk is hidden.
 			rows.append(
-				Row(path, depth, True, name, name, None, None, is_expanded)
+				Row(
+					path,
+					depth,
+					True,
+					name,
+					names.display_subject(name),
+					None,
+					None,
+					is_expanded,
+				)
 			)
 			if is_expanded:
-				_emit(grandchildren, path + SEPARATOR, depth + 1, expanded, rows)
+				_emit(grandchildren, path + PATH_SEPARATOR, depth + 1, expanded, rows)
 		elif names.is_proof_page(name):
 			page = names.parse(name)
 			rows.append(
@@ -83,7 +110,7 @@ def _emit(children, prefix, depth, expanded, rows):
 					depth,
 					False,
 					name,
-					names.display(page.subject),
+					names.display_subject(page.subject),
 					page.status,
 					page.owner,
 					None,

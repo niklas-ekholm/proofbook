@@ -56,11 +56,11 @@ HEIGHT_PERSISTENCE_METHODS = ["currentHeight", "setCurrentHeight_"]
 
 class AdapterRules(unittest.TestCase):
 	def setUp(self):
-		self.tree = pysource.parse(ADAPTER)
+		self.adapter = pysource.parse(ADAPTER)
 
 	def test_the_font_is_never_reached_through_glyphs_currentdocument(self):
 		self.assertEqual(
-			pysource.attribute_reads(self.tree, "Glyphs.currentDocument"),
+			pysource.attribute_reads(self.adapter, "Glyphs.currentDocument"),
 			[],
 			"there is one palette instance per document window, so the font "
 			"must come from the palette's own window controller",
@@ -68,20 +68,20 @@ class AdapterRules(unittest.TestCase):
 
 	def test_the_font_is_reached_through_the_palettes_window_controller(self):
 		self.assertTrue(
-			pysource.attribute_reads(self.tree, "self.windowController"),
+			pysource.attribute_reads(self.adapter, "self.windowController"),
 			"the adapter never asks its own window controller for the font",
 		)
 
 	def test_the_adapter_re_resolves_when_the_document_is_saved(self):
 		self.assertIn(
 			"DOCUMENTWASSAVED",
-			pysource.referenced_names(self.tree),
+			pysource.referenced_names(self.adapter),
 			"the unsaved empty state must clear itself with no user action, "
 			"and Save As must re-resolve through the same path",
 		)
 
 	def test_every_callback_the_adapter_adds_is_removed_again(self):
-		calls = pysource.called_names(self.tree)
+		calls = pysource.called_names(self.adapter)
 		self.assertIn("Glyphs.addCallback", calls)
 		self.assertIn(
 			"Glyphs.removeCallback",
@@ -92,22 +92,22 @@ class AdapterRules(unittest.TestCase):
 	def test_the_tree_is_a_flat_list_not_an_outline_view(self):
 		# ADR-0002: vanilla ships no NSOutlineView wrapper, so the hierarchy
 		# is a flat List2 whose rows carry a depth, indented in Python.
-		self.assertIn("vanilla.List2", pysource.called_names(self.tree))
+		self.assertIn("vanilla.List2", pysource.called_names(self.adapter))
 		self.assertNotIn(
-			"NSOutlineView", pysource.referenced_names(self.tree)
+			"NSOutlineView", pysource.referenced_names(self.adapter)
 		)
 
 	def test_a_row_carries_its_filename_as_a_tooltip(self):
 		# The only place a filename appears in the palette (spec §4).
-		called = pysource.called_names(self.tree)
+		called = pysource.called_names(self.adapter)
 		self.assertTrue(
 			[name for name in called if name.endswith(".setToolTip_")],
 			"nothing in the adapter sets a tooltip any more",
 		)
 
 	def test_the_palette_height_is_a_range_the_tree_scrolls_inside(self):
-		minimum = pysource.module_constant(self.tree, "PALETTE_MIN_HEIGHT")
-		maximum = pysource.module_constant(self.tree, "PALETTE_MAX_HEIGHT")
+		minimum = pysource.module_constant(self.adapter, "PALETTE_MIN_HEIGHT")
+		maximum = pysource.module_constant(self.adapter, "PALETTE_MAX_HEIGHT")
 		self.assertLess(
 			minimum,
 			maximum,
@@ -115,7 +115,7 @@ class AdapterRules(unittest.TestCase):
 		)
 		for method, constant in HEIGHT_BOUNDS:
 			with self.subTest(method=method):
-				node = pysource.function(self.tree, method)
+				node = pysource.function(self.adapter, method)
 				self.assertIsNotNone(node)
 				self.assertIn(constant, pysource.referenced_names(node))
 
@@ -124,7 +124,7 @@ class AdapterRules(unittest.TestCase):
 		# translates: the remembered height would reset with the UI language.
 		for method in HEIGHT_PERSISTENCE_METHODS:
 			with self.subTest(method=method):
-				node = pysource.function(self.tree, method)
+				node = pysource.function(self.adapter, method)
 				self.assertIsNotNone(
 					node, "%s no longer overrides the SDK" % method
 				)
@@ -138,21 +138,21 @@ class AdapterRules(unittest.TestCase):
 	def test_the_palette_installs_no_context_menu(self):
 		# Neither empty state offers one, and there are no rows to target
 		# until issue #22 builds the menu on top of them.
-		source = pysource.called_names(self.tree) | pysource.referenced_names(
-			self.tree
+		source = pysource.called_names(self.adapter) | pysource.referenced_names(
+			self.adapter
 		)
 		self.assertEqual(
 			{"NSMenu", "setMenu_"}.intersection(source),
 			set(),
 		)
 		self.assertNotIn(
-			"menuCallback", pysource.keyword_argument_names(self.tree)
+			"menuCallback", pysource.keyword_argument_names(self.adapter)
 		)
 
 	def test_nothing_built_at_load_time_touches_the_filesystem(self):
 		for name in LOAD_TIME_METHODS:
 			with self.subTest(method=name):
-				node = pysource.function(self.tree, name)
+				node = pysource.function(self.adapter, name)
 				self.assertIsNotNone(node, "%s is gone from the adapter" % name)
 				called = pysource.called_names(node)
 				self.assertEqual(FILESYSTEM_CALLS.intersection(called), set())
