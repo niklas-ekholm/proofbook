@@ -155,7 +155,9 @@ Below the tree: a **collapsible note pane**, its collapsed state remembered. A t
 
 ### vanilla
 
-Assumed present. The `try: import vanilla` guard lives at **module scope** — never inside `PalettePlugin.init`, whose `settings()` and `start()` calls are unguarded in the SDK (verified in #6: `plugins.py:971`). On `ImportError`, fall back to the skeleton's ~15-line AppKit view reading *Install vanilla via Plugin Manager*. There is nothing on disk to inspect — Glyphs injects vanilla into `sys.path` at runtime — so the import attempt is the only detection mechanism.
+Assumed present. The `try: import vanilla` guard lives at **module scope** — never inside `PalettePlugin.init`, whose `settings()` and `start()` calls are unguarded in the SDK (verified in #6: `plugins.py:971`). On `ImportError`, fall back to the ~15-line AppKit view reading *Install vanilla via Plugin Manager*. There is nothing on disk to inspect — Glyphs injects vanilla into `sys.path` at runtime — so the import attempt is the only detection mechanism.
+
+**Both paths are verified in Glyphs 4.** Flipping `PROOFBOOK_FORCE_NO_VANILLA` in the adapter raises the `ImportError` for real; the palette then reports `vanilla: MISSING` and draws the AppKit fallback, with no crash dialog. Keep that flag working — it is the only way to exercise the fallback on a machine where vanilla is installed.
 
 ### Empty states
 
