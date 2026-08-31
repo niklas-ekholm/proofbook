@@ -153,6 +153,8 @@ Below the tree: a **collapsible note pane**, its collapsed state remembered. A t
 
 **Palette height** is a fixed range, `minHeight` ~180 / `maxHeight` ~400, with the tree scrolling inside it. Height never tracks content. Collapsing the note pane changes what is visible, not the palette's height. Override the `ViewHeight` persistence key, which otherwise derives from the *localised* palette name.
 
+*(**Verified in Glyphs 4**: the tree browses a real proof-book — nesting, expansion, tooltips, ordering, membership — and the palette drags between 180 and 400 with the height surviving a relaunch. Getting the drag working took four wrong attempts and two crashes; §10 has what it turned on. One residual Glyphs quirk: `mouseDragged:` stores the height with the section's chrome added while `setController:` restores it without, so a palette dragged to the very top comes back ~17pt short. Not worth compensating for — the correction would have to guess the same constant.)*
+
 ### vanilla
 
 Assumed present. The `try: import vanilla` guard lives at **module scope** — never inside `PalettePlugin.init`, whose `settings()` and `start()` calls are unguarded in the SDK (verified in #6: `plugins.py:971`). On `ImportError`, fall back to the ~15-line AppKit view reading *Install vanilla via Plugin Manager*. There is nothing on disk to inspect — Glyphs injects vanilla into `sys.path` at runtime — so the import attempt is the only detection mechanism.
