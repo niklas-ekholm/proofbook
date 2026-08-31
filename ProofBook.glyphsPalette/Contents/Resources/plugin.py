@@ -73,7 +73,11 @@ PALETTE_WIDTH = 180
 # height never tracks its content, so a proof-book of three pages and one of
 # three hundred take the same space until the designer drags the divider.
 PALETTE_MIN_HEIGHT = 180
-PALETTE_MAX_HEIGHT = 400
+# 1200 is measured, not round: about as tall as the palette can be on a
+# 1920x1243 display with the other panels collapsed. A large proof-book runs
+# well past 400 rows, and on a big display the scroll was doing work the
+# screen had room for.
+PALETTE_MAX_HEIGHT = 1200
 
 # The strip along the foot of the palette that Glyphs resizes by. Read off
 # `-[GSPaletteView mouseDown:]`, which converts the click into view

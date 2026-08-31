@@ -151,9 +151,9 @@ Above the tree: a thin **coverage bar** (done/wip proportions) with `N of M done
 
 Below the tree: a **collapsible note pane**, its collapsed state remembered. A thin footer toolbar carries a `+ New proof-page` button.
 
-**Palette height** is a fixed range, `minHeight` ~180 / `maxHeight` ~400, with the tree scrolling inside it. Height never tracks content. Collapsing the note pane changes what is visible, not the palette's height. Override the `ViewHeight` persistence key, which otherwise derives from the *localised* palette name.
+**Palette height** is a fixed range, `minHeight` ~180 / `maxHeight` 1200, with the tree scrolling inside it. The maximum is measured rather than round: about as tall as the palette goes on a 1920x1243 display with the other panels collapsed. A proof-book large enough to matter runs well past what 400 could show, and on a large display that was scrolling through space the screen had spare. Height never tracks content. Collapsing the note pane changes what is visible, not the palette's height. Override the `ViewHeight` persistence key, which otherwise derives from the *localised* palette name.
 
-*(**Verified in Glyphs 4**: the tree browses a real proof-book — nesting, expansion, tooltips, ordering, membership — and the palette drags between 180 and 400 with the height surviving a relaunch. Getting the drag working took four wrong attempts and two crashes; §10 has what it turned on. One residual Glyphs quirk: `mouseDragged:` stores the height with the section's chrome added while `setController:` restores it without, so a palette dragged to the very top comes back ~17pt short. Not worth compensating for — the correction would have to guess the same constant.)*
+*(**Verified in Glyphs 4**: the tree browses a real proof-book — nesting, expansion, tooltips, ordering, membership — and the palette drags across its range with the height surviving a relaunch. Getting the drag working took four wrong attempts and two crashes; §10 has what it turned on. One residual Glyphs quirk: `mouseDragged:` stores the height with the section's chrome added while `setController:` restores it without, so a palette dragged to the very top comes back ~17pt short. Not worth compensating for — the correction would have to guess the same constant.)*
 
 ### vanilla
 
