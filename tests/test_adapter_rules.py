@@ -42,6 +42,17 @@ FILESYSTEM_CALLS = {
 # blank forever is the worse bug.
 LOAD_TIME_METHODS = ["settings", "_vanilla_view", "_appkit_view"]
 
+# The palette's height is a range with the tree scrolling inside it, and the
+# range is stated once, in constants both ends read.
+HEIGHT_BOUNDS = [
+	("minHeight", "PALETTE_MIN_HEIGHT"),
+	("maxHeight", "PALETTE_MAX_HEIGHT"),
+]
+
+# The SDK persists the dragged height under `self.name + ".ViewHeight"`; both
+# halves are overridden so the key survives a change of UI language.
+HEIGHT_PERSISTENCE_METHODS = ["currentHeight", "setCurrentHeight_"]
+
 
 class AdapterRules(unittest.TestCase):
 	def setUp(self):
@@ -77,6 +88,52 @@ class AdapterRules(unittest.TestCase):
 			calls,
 			"callbacks left registered crash Glyphs when the window closes",
 		)
+
+	def test_the_tree_is_a_flat_list_not_an_outline_view(self):
+		# ADR-0002: vanilla ships no NSOutlineView wrapper, so the hierarchy
+		# is a flat List2 whose rows carry a depth, indented in Python.
+		self.assertIn("vanilla.List2", pysource.called_names(self.tree))
+		self.assertNotIn(
+			"NSOutlineView", pysource.referenced_names(self.tree)
+		)
+
+	def test_a_row_carries_its_filename_as_a_tooltip(self):
+		# The only place a filename appears in the palette (spec §4).
+		called = pysource.called_names(self.tree)
+		self.assertTrue(
+			[name for name in called if name.endswith(".setToolTip_")],
+			"nothing in the adapter sets a tooltip any more",
+		)
+
+	def test_the_palette_height_is_a_range_the_tree_scrolls_inside(self):
+		minimum = pysource.module_constant(self.tree, "PALETTE_MIN_HEIGHT")
+		maximum = pysource.module_constant(self.tree, "PALETTE_MAX_HEIGHT")
+		self.assertLess(
+			minimum,
+			maximum,
+			"a single fixed height makes the palette track its content",
+		)
+		for method, constant in HEIGHT_BOUNDS:
+			with self.subTest(method=method):
+				node = pysource.function(self.tree, method)
+				self.assertIsNotNone(node)
+				self.assertIn(constant, pysource.referenced_names(node))
+
+	def test_the_stored_height_is_not_keyed_off_the_localised_name(self):
+		# The SDK derives its key from self.name, which Glyphs.localize
+		# translates: the remembered height would reset with the UI language.
+		for method in HEIGHT_PERSISTENCE_METHODS:
+			with self.subTest(method=method):
+				node = pysource.function(self.tree, method)
+				self.assertIsNotNone(
+					node, "%s no longer overrides the SDK" % method
+				)
+				self.assertEqual(
+					pysource.attribute_reads(node, "self.name"), []
+				)
+				self.assertIn(
+					"VIEW_HEIGHT_KEY", pysource.referenced_names(node)
+				)
 
 	def test_the_palette_installs_no_context_menu(self):
 		# Neither empty state offers one, and there are no rows to target

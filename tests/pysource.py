@@ -141,3 +141,14 @@ def keyword_argument_names(node):
 		for keyword in child.keywords
 		if keyword.arg
 	}
+
+
+def module_constant(tree, name):
+	"""The literal value assigned to a module-level `NAME = ...`, or None."""
+	for node in tree.body:
+		if not isinstance(node, ast.Assign):
+			continue
+		for target in node.targets:
+			if isinstance(target, ast.Name) and target.id == name:
+				return ast.literal_eval(node.value)
+	return None

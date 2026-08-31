@@ -6,8 +6,9 @@ intents; the adapter in `../plugin.py` performs them. That is what lets the
 suite in `tests/` run under plain `python3`, with no Glyphs and no install.
 
 `discovery` resolves the proof-book folder and names the empty states;
-`intents` holds the verbs the adapter performs. The filename grammar, the
-frontmatter header and the listing flattener land on top of the same seam.
+`intents` holds the verbs the adapter performs; `names` is the filename
+grammar; `tree` flattens a listing into the rows the palette draws. The
+frontmatter header lands on top of the same seam.
 """
 
 __version__ = "0.0.1"

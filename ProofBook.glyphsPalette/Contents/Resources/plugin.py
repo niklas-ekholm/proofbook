@@ -41,7 +41,7 @@ if _BUNDLE_RESOURCES not in sys.path:
 	sys.path.append(_BUNDLE_RESOURCES)
 
 import proofbook  # noqa: E402  (only importable once sys.path is set, above)
-from proofbook import discovery  # noqa: E402
+from proofbook import discovery, tree  # noqa: E402
 
 PROOFBOOK_FORCE_NO_VANILLA = False
 
@@ -58,10 +58,25 @@ except ImportError:
 
 
 PALETTE_WIDTH = 180
-# minHeight and maxHeight are deliberately equal while the palette holds only
-# an empty state; the ~180–400 scrolling range in spec §4 arrives with the
-# tree (issue #16), along with the ViewHeight override.
-PALETTE_HEIGHT = 180
+# A fixed range with the tree scrolling inside it (spec §4): the palette's
+# height never tracks its content, so a proof-book of three pages and one of
+# three hundred take the same space until the designer drags the divider.
+PALETTE_MIN_HEIGHT = 180
+PALETTE_MAX_HEIGHT = 400
+
+# The SDK stores the dragged height under `self.name + ".ViewHeight"`, and
+# `self.name` is localised — so a designer switching Glyphs to German would
+# silently start again from the default. Keyed off the bundle identifier
+# instead, which is the one name that does not move.
+VIEW_HEIGHT_KEY = "com.niklasekholm.ProofBookPalette.ViewHeight"
+
+# The tree is drawn as text (ADR-0002), so the indent is text too: one em
+# space per level, then a two-cell lead that keeps a page's subject aligned
+# under the subject of the folder holding it.
+INDENT = " "
+DISCLOSURE_EXPANDED = "▾ "
+DISCLOSURE_COLLAPSED = "▸ "
+PAGE_LEAD = "  "
 
 
 def _report_lines():
@@ -71,6 +86,34 @@ def _report_lines():
 		"Python %s" % platform.python_version(),
 		"vanilla: %s" % ("yes" if vanilla is not None else "MISSING"),
 	]
+
+
+def _row_text(row):
+	"""The one string a row draws: indentation, disclosure glyph, subject."""
+	lead = PAGE_LEAD
+	if row.is_dir:
+		lead = DISCLOSURE_EXPANDED if row.expanded else DISCLOSURE_COLLAPSED
+	return INDENT * row.depth + lead + row.subject
+
+
+if vanilla is not None:
+
+	class ProofBookRowCell(vanilla.EditTextList2Cell):
+		"""A tree row: the drawn text, and the raw filename as its tooltip.
+
+		The tooltip is the *only* place a filename appears in the palette —
+		transparency on demand, not on screen (spec §4). List2 reuses cell
+		views, so the tooltip is set on every `set`, never once at build time.
+		"""
+
+		def set(self, row):
+			self.editText.set(_row_text(row))
+			# Both: the text field covers the container and wins the hit test.
+			self._nsObject.setToolTip_(row.filename)
+			self.getNSTextField().setToolTip_(row.filename)
+
+else:
+	ProofBookRowCell = None
 
 
 class ProofBookPalette(PalettePlugin):
@@ -86,6 +129,16 @@ class ProofBookPalette(PalettePlugin):
 		# and is the only reason _draw has nothing to say.
 		self.resolution = None
 
+		# Per-palette-instance and in-memory (spec §6): nothing is shared
+		# across windows and nothing survives a window close.
+		self.entries = []
+		self.rows = []
+		self.expanded = set()
+		self.selectedPath = None
+		# Set while the adapter drives the List2's selection itself, so the
+		# selection callback can tell a designer's click from its own writing.
+		self.settingSelection = False
+
 		if vanilla is not None:
 			self.dialog = self._vanilla_view()
 		else:
@@ -93,10 +146,8 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _vanilla_view(self):
-		self.paletteView = vanilla.Window((PALETTE_WIDTH, PALETTE_HEIGHT))
-		group = self.paletteView.group = vanilla.Group(
-			(0, 0, PALETTE_WIDTH, PALETTE_HEIGHT)
-		)
+		self.paletteView = vanilla.Window((PALETTE_WIDTH, PALETTE_MIN_HEIGHT))
+		group = self.paletteView.group = vanilla.Group((0, 0, 0, 0))
 		group.title = vanilla.TextBox((8, 8, -8, 17), "", sizeStyle="small")
 		group.explanation = vanilla.TextBox(
 			(8, 30, -8, 60), "", sizeStyle="small"
@@ -108,15 +159,33 @@ class ProofBookPalette(PalettePlugin):
 			callback=self.createProofBook,
 		)
 		group.createButton.show(False)
+		# One column, one cell class: the swatch, the owner pill and the
+		# coverage bar are issue #17. Sorting is off because the core already
+		# ordered the rows, and a header would only offer to undo that.
+		group.tree = vanilla.List2(
+			(0, 0, 0, 0),
+			items=[],
+			columnDescriptions=[
+				dict(identifier="row", cellClass=ProofBookRowCell)
+			],
+			allowsSorting=False,
+			allowsMultipleSelection=False,
+			allowsEmptySelection=True,
+			showColumnTitles=False,
+			alternatingRowColors=False,
+			drawFocusRing=False,
+			selectionCallback=self.treeSelectionChanged,
+		)
+		group.tree.show(False)
 		return group.getNSView()
 
 	@objc.python_method
 	def _appkit_view(self):
 		"""No-dependency fallback: proves the palette loads without vanilla."""
 		view = NSView.alloc().initWithFrame_(
-			NSMakeRect(0, 0, PALETTE_WIDTH, PALETTE_HEIGHT)
+			NSMakeRect(0, 0, PALETTE_WIDTH, PALETTE_MIN_HEIGHT)
 		)
-		y = PALETTE_HEIGHT - 24
+		y = PALETTE_MIN_HEIGHT - 24
 		for line in _report_lines() + ["Install vanilla via Plugin Manager."]:
 			field = NSTextField.alloc().initWithFrame_(
 				NSMakeRect(8, y, PALETTE_WIDTH - 16, 16)
@@ -195,6 +264,29 @@ class ProofBookPalette(PalettePlugin):
 			return
 		self._resolve()
 
+	@objc.python_method
+	def treeSelectionChanged(self, sender):
+		"""A folder row toggles expansion; only a proof-page is ever selected.
+
+		The table has no hook for an unselectable row that still takes a
+		click — List2 reserves that for group rows, which float and draw as
+		headers. So a folder is selectable to AppKit and never to ProofBook:
+		the click toggles, the rows are rebuilt, and the selection is put back
+		where it was. What the selection *names* is always a real proof-page.
+		"""
+		if self.settingSelection:
+			return
+		indexes = sender.getSelectedIndexes()
+		if not indexes:
+			self.selectedPath = None
+			return
+		row = self.rows[indexes[0]]
+		if not row.is_dir:
+			self.selectedPath = row.path
+			return  # Pushing it into the Edit view is issue #18.
+		self.expanded = tree.toggled(self.expanded, row.path)
+		self._draw_tree()
+
 	# -- Resolving the proof-book ----------------------------------------
 
 	@objc.python_method
@@ -232,13 +324,38 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _resolve(self):
-		"""Re-resolve the proof-book and redraw. The one stat lives here."""
+		"""Re-resolve the proof-book, re-read the listing, and redraw."""
 		filepath = self._font_filepath()
 		path = discovery.expected_path(filepath)
 		# An unsaved font never reaches the disk: there is nothing to stat.
 		folder_exists = path is not None and os.path.isdir(path)
 		self.resolution = discovery.resolve(filepath, folder_exists)
+		if self.resolution.kind == discovery.PROOF_BOOK:
+			self.entries = self._listing(self.resolution.path)
+		else:
+			self.entries = []
 		self._draw()
+
+	@objc.python_method
+	def _listing(self, root):
+		"""Walk the proof-book into the entries the core flattens.
+
+		Names only — no file is opened and none of this decides membership;
+		that is the core's job. The walk is recursive whatever is expanded,
+		because the coverage count and the bulk verbs are about the whole
+		proof-book, not the visible part of it.
+		"""
+		entries = []
+		for dirpath, dirnames, filenames in os.walk(root):
+			relative = os.path.relpath(dirpath, root)
+			prefix = "" if relative == os.curdir else relative + tree.SEPARATOR
+			for name in dirnames:
+				entries.append(tree.Entry(prefix + name, True))
+			for name in filenames:
+				entries.append(tree.Entry(prefix + name, False))
+		return entries
+
+	# -- Drawing ----------------------------------------------------------
 
 	@objc.python_method
 	def _draw(self):
@@ -247,19 +364,51 @@ class ProofBookPalette(PalettePlugin):
 		group = self.paletteView.group
 		state = discovery.empty_state(self.resolution)
 		if state is None:
-			# There is a proof-book. Browsing it is issue #16; naming it is
-			# all this ticket has to say.
-			group.title.set(discovery.FOLDER_NAME)
-			group.explanation.set("")
+			group.title.show(False)
+			group.explanation.show(False)
 			group.createButton.show(False)
+			group.tree.show(True)
+			self._draw_tree()
 			return
+		# Neither empty state has a tree, and neither has a context menu.
+		group.tree.show(False)
+		self.rows = []
 		group.title.set(state.title)
+		group.title.show(True)
 		group.explanation.set(state.explanation)
+		group.explanation.show(True)
 		if state.button is None:
 			group.createButton.show(False)
 		else:
 			group.createButton.setTitle(state.button)
 			group.createButton.show(True)
+
+	@objc.python_method
+	def _draw_tree(self):
+		"""Re-flatten and re-set every row. Toggling a folder comes through here.
+
+		ADR-0002 accepts re-rendering the whole list on every toggle; how that
+		holds up at several hundred rows is one of the questions the MVP is
+		meant to answer.
+		"""
+		group = self.paletteView.group
+		self.rows = tree.flatten(self.entries, self.expanded)
+		selected = [
+			index
+			for index, row in enumerate(self.rows)
+			if row.path == self.selectedPath
+		]
+		self.settingSelection = True
+		try:
+			group.tree.set([{"row": row} for row in self.rows])
+			group.tree.setSelectedIndexes(selected)
+		finally:
+			self.settingSelection = False
+		# The selected page can vanish from under the selection — an external
+		# delete, or a rename read as a delete plus an add. Clearing the
+		# selection is issue #20's business; noticing it is free here.
+		if not selected:
+			self.selectedPath = None
 
 	@objc.python_method
 	def _alert(self, message):
@@ -271,10 +420,24 @@ class ProofBookPalette(PalettePlugin):
 	# -- Palette chrome ---------------------------------------------------
 
 	def minHeight(self):
-		return PALETTE_HEIGHT
+		return PALETTE_MIN_HEIGHT
 
 	def maxHeight(self):
-		return PALETTE_HEIGHT
+		return PALETTE_MAX_HEIGHT
+
+	@objc.typedSelector(b"L@:")
+	def currentHeight(self):
+		stored = Glyphs.defaults[VIEW_HEIGHT_KEY]
+		try:
+			height = int(stored)
+		except (TypeError, ValueError):
+			return PALETTE_MIN_HEIGHT
+		return max(PALETTE_MIN_HEIGHT, min(PALETTE_MAX_HEIGHT, height))
+
+	@objc.typedSelector(b"v@:L")
+	def setCurrentHeight_(self, newHeight):
+		if PALETTE_MIN_HEIGHT <= newHeight <= PALETTE_MAX_HEIGHT:
+			Glyphs.defaults[VIEW_HEIGHT_KEY] = int(newHeight)
 
 	@objc.python_method
 	def __file__(self):
