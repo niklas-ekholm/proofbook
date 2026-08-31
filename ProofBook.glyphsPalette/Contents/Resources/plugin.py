@@ -1,20 +1,23 @@
 # encoding: utf-8
 """
-ProofBook palette skeleton — issue #6.
+ProofBook — the adapter (ADR-0005).
 
-Not the plugin. This exists only to verify, by running Glyphs 4:
-  - the .glyphsPalette bundle layout and the Plugins install path
-  - the edit-test loop (symlink + reload)
-  - where a Python error surfaces
-  - that Python 3.14 is what actually runs
-  - whether vanilla is importable, and whether the ImportError guard degrades cleanly
+Everything that touches Glyphs lives here: the PalettePlugin subclass, the
+vanilla view, and later the worker thread and every syscall. The logic lives in
+the `proofbook` package sitting beside this file, which knows nothing about
+Glyphs and is covered by `tests/` at the repo root.
 
-Flip PROOFBOOK_FORCE_ERROR to True to produce a deliberate error and find out
-where it lands.
+The repo *is* the bundle: there is no build step and no copy to forget. This
+file puts its own directory on sys.path so `import proofbook` resolves inside
+the bundle regardless of how Glyphs invokes it.
+
+Flip PROOFBOOK_FORCE_NO_VANILLA to True to exercise the AppKit fallback view
+without uninstalling vanilla.
 """
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 
@@ -23,13 +26,22 @@ from AppKit import NSFont, NSMakeRect, NSTextField, NSView
 from GlyphsApp import Glyphs
 from GlyphsApp.plugins import PalettePlugin
 
-PROOFBOOK_FORCE_ERROR = False
+_BUNDLE_RESOURCES = os.path.dirname(os.path.abspath(__file__))
+if _BUNDLE_RESOURCES not in sys.path:
+	sys.path.insert(0, _BUNDLE_RESOURCES)
+
+import proofbook  # noqa: E402  (only importable once sys.path is set, above)
+
+PROOFBOOK_FORCE_NO_VANILLA = False
 
 # Guard at module scope, never inside PalettePlugin.init — the SDK calls
 # settings() and start() from init unguarded (see issue #8).
 try:
 	import vanilla
 except ImportError:
+	vanilla = None
+
+if PROOFBOOK_FORCE_NO_VANILLA:
 	vanilla = None
 
 
@@ -39,7 +51,8 @@ PALETTE_HEIGHT = 90
 
 def _report_lines():
 	return [
-		"ProofBook skeleton",
+		"ProofBook",
+		proofbook.describe(),
 		"Python %s" % platform.python_version(),
 		"vanilla: %s" % ("yes" if vanilla is not None else "MISSING"),
 	]
@@ -51,9 +64,6 @@ class ProofBookPalette(PalettePlugin):
 	@objc.python_method
 	def settings(self):
 		self.name = Glyphs.localize({"en": "ProofBook"})
-
-		if PROOFBOOK_FORCE_ERROR:
-			raise RuntimeError("ProofBook skeleton: deliberate error from settings()")
 
 		if vanilla is not None:
 			self.dialog = self._vanilla_view()
@@ -99,10 +109,10 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def start(self):
-		# No UPDATEINTERFACE callback: the skeleton is static, and #2 warns
-		# never to touch the filesystem from that callback anyway.
-		print("ProofBook skeleton loaded — %s" % ", ".join(_report_lines()))
-		print("sys.executable: %s" % sys.executable)
+		# No UPDATEINTERFACE callback: nothing here is dynamic yet, and #2
+		# warns never to touch the filesystem from that callback anyway.
+		print("ProofBook loaded — %s" % ", ".join(_report_lines()))
+		print("core imported from: %s" % os.path.dirname(proofbook.__file__))
 
 	def minHeight(self):
 		return PALETTE_HEIGHT

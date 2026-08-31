@@ -39,7 +39,7 @@ Suggested core modules (a suggestion, not a requirement): `names.py` (the filena
 ### Layout
 
 ```
-prototypes/ProofBook.glyphsPalette/Contents/
+ProofBook.glyphsPalette/Contents/     at the repository root
   Info.plist              NSPrincipalClass = ProofBookPalette
                           PyMainFileNames = ["plugin.py"]
   MacOS/plugin            stock PyObjC loader (ad-hoc/linker-signed, freely copyable)
@@ -48,7 +48,9 @@ prototypes/ProofBook.glyphsPalette/Contents/
 tests/                    unittest suite over the core
 ```
 
-**The core ships inside the bundle.** No build step, no symlink: the repo *is* the bundle. `plugin.py` inserts its own directory into `sys.path` before importing `proofbook`. *(This `sys.path` insert is the one mechanical assumption not yet verified against the `Glyphs4` SDK — confirm it early.)*
+**The core ships inside the bundle.** No build step, no symlink: the repo *is* the bundle, and the bundle sits at the repository root, so the symlink in `Plugins/` points at the clone itself. `plugin.py` inserts its own directory into `sys.path` before importing `proofbook`.
+
+The `sys.path` insert was the one mechanical assumption not verified against the `Glyphs4` SDK; #14 stood the seam up and the palette now draws a string it obtained from the core. `tests/test_bundle_layout.py` reads `plugin.py` with `ast` to hold the two rules that cannot be checked from outside Glyphs: the insert precedes the `import proofbook`, and the `try: import vanilla` guard is still at module scope.
 
 No `.xib` and no `.nib`. They are optional in Glyphs 4 and are not used.
 

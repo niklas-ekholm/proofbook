@@ -3,3 +3,7 @@
 
 # Glyphs code editor autosaves, written inside plugin bundles
 *(autosave).py
+
+# The repo is the bundle: keep byte-code out of what gets installed
+__pycache__/
+*.pyc

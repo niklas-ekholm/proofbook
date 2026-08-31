@@ -17,7 +17,7 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Skeleton for issue #6. Not the plugin.</string>
+	<string>Copyright © 2026 Niklas Ekholm.</string>
 	<key>NSPrincipalClass</key>
 	<string>ProofBookPalette</string>
 	<key>PyMainFileNames</key>
