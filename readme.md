@@ -26,7 +26,11 @@ ln -s "$PWD/ProofBook.glyphsPalette" ~/"Library/Application Support/Glyphs 4/Plu
 ls ~/"Library/Application Support/Glyphs 4/Plugins/ProofBook.glyphsPalette/Contents/"
 ```
 
-Run that second command: a broken symlink fails completely silently, which is indistinguishable from the plugin not being installed. `docs/spec/proofbook-mvp.md` §10 has the rest of the install and edit-test notes.
+Run that second command. A broken symlink fails completely silently — the palette is simply absent, indistinguishable from the plugin not being installed.
+
+**Re-create the link whenever the bundle moves**, including when the clone itself is moved or renamed. A symlink stores the old path, not the file, so the link survives the move looking perfectly healthy while pointing at nothing; Finder's *Show Original* reports that the original cannot be found. Promoting the bundle out of `prototypes/` in [#14](https://github.com/niklas-ekholm/proofbook/issues/14) broke every existing link exactly this way. Nothing in the test suite can catch it — the link lives outside the repo — so the `ls` above is the check.
+
+`docs/spec/proofbook-mvp.md` §10 has the rest of the install and edit-test notes.
 
 ## Tests
 
