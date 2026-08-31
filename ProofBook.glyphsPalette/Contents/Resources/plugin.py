@@ -48,9 +48,11 @@ PROOFBOOK_FORCE_NO_VANILLA = False
 
 # Temporary, for issue #16: the palette draws no resize handle and reading the
 # SDK has not said why. This reports what the live plugin actually hands
-# Glyphs, once per palette, after load — a load-time print is invisible in the
-# Macro Panel. Remove it once the handle is understood.
+# Glyphs, once per palette, after load. It writes to a file because the Macro
+# Panel captures stdout only while a macro runs — a plugin's print reaches
+# nothing anyone can read. Remove both once the handle is understood.
 PROOFBOOK_DEBUG_HEIGHT = True
+PROOFBOOK_DEBUG_LOG = "/tmp/proofbook-height.log"
 
 # Guard at module scope, never inside PalettePlugin.init — the SDK calls
 # settings() and start() from init unguarded (see issue #8).
@@ -286,21 +288,43 @@ class ProofBookPalette(PalettePlugin):
 	@objc.python_method
 	def _report_height(self):
 		"""What Glyphs is actually told about this palette's height."""
+		lines = []
+		for label, call in (
+			("minHeight()", self.minHeight),
+			("maxHeight()", self.maxHeight),
+			("currentHeight()", self.currentHeight),
+			("interfaceVersion()", self.interfaceVersion),
+		):
+			try:
+				lines.append("%s = %r" % (label, call()))
+			except Exception as error:  # noqa: BLE001 — a diagnostic
+				lines.append("%s raised %r" % (label, error))
+		lines.append("self.min = %r" % (getattr(self, "min", "<unset>"),))
+		lines.append("self.max = %r" % (getattr(self, "max", "<unset>"),))
+
+		# The view chain is the other half of the question: Glyphs may only
+		# offer a handle for a view it has wrapped in something of its own.
 		view = self.theView()
-		frame = view.frame().size.height if view is not None else None
-		print(
-			"ProofBook height — min=%r max=%r current=%r "
-			"self.min=%r self.max=%r view=%r class=%s"
-			% (
-				self.minHeight(),
-				self.maxHeight(),
-				self.currentHeight(),
-				getattr(self, "min", "<unset>"),
-				getattr(self, "max", "<unset>"),
-				frame,
-				type(view).__name__,
+		depth = 0
+		while view is not None and depth < 5:
+			lines.append(
+				"view[%d] = %s frame=%r autoresize=%r"
+				% (
+					depth,
+					view.className(),
+					tuple(view.frame().size),
+					view.autoresizingMask(),
+				)
 			)
-		)
+			view = view.superview()
+			depth += 1
+
+		try:
+			with open(PROOFBOOK_DEBUG_LOG, "a", encoding="utf-8") as log:
+				log.write("--- %s\n" % self.name)
+				log.write("\n".join(lines) + "\n")
+		except OSError:
+			pass
 
 	@objc.python_method
 	def documentWasSaved(self, notification):
