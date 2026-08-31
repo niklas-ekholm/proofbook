@@ -42,13 +42,23 @@ FILESYSTEM_CALLS = {
 # window controller.
 LOAD_TIME_METHODS = ["settings", "_vanilla_view", "_appkit_view", "start"]
 
-# The palette's height range reaches Glyphs through the SDK's own attributes.
-# Overriding minHeight/maxHeight in Python instead leaves `init` to fill them
-# from the view's frame — one number, so no resize handle is drawn.
+# The palette's height range, stated once and read at the width Glyphs uses.
 HEIGHT_BOUNDS = [
-	("self.min", "PALETTE_MIN_HEIGHT"),
-	("self.max", "PALETTE_MAX_HEIGHT"),
+	("minHeight", "PALETTE_MIN_HEIGHT"),
+	("maxHeight", "PALETTE_MAX_HEIGHT"),
 ]
+
+# Glyphs declares its palette height properties `Tq` and `TQ` — NSInteger and
+# NSUInteger, 64-bit. The Python SDK declares the selectors behind them `l`
+# and `L`, which are 32-bit, so a palette that inherits the SDK's declaration
+# hands Glyphs a range it cannot read and is drawn at a fixed height with no
+# resize handle. Every one of these must be redeclared at 64 bits.
+SELECTOR_ENCODINGS = {
+	"minHeight": b"q@:",
+	"maxHeight": b"q@:",
+	"currentHeight": b"Q@:",
+	"setCurrentHeight_": b"v@:Q",
+}
 
 # The SDK persists the dragged height under `self.name + ".ViewHeight"`; both
 # halves are overridden so the key survives a change of UI language.
@@ -114,20 +124,21 @@ class AdapterRules(unittest.TestCase):
 			maximum,
 			"a single fixed height makes the palette track its content",
 		)
-		settings = pysource.function(self.adapter, "settings")
-		self.assertIsNotNone(settings)
-		for attribute, constant in HEIGHT_BOUNDS:
-			with self.subTest(attribute=attribute):
-				self.assertTrue(
-					pysource.attribute_reads(settings, attribute),
-					"settings no longer sets %s, so the SDK falls back to "
-					"the view's frame and the palette stops resizing"
-					% attribute,
+		for method, constant in HEIGHT_BOUNDS:
+			with self.subTest(method=method):
+				node = pysource.function(self.adapter, method)
+				self.assertIsNotNone(node, "%s is gone" % method)
+				self.assertIn(constant, pysource.referenced_names(node))
+
+	def test_the_height_selectors_are_declared_at_the_width_glyphs_reads(self):
+		for method, encoding in SELECTOR_ENCODINGS.items():
+			with self.subTest(method=method):
+				self.assertEqual(
+					pysource.typed_selector_encoding(self.adapter, method),
+					encoding,
+					"the SDK's 32-bit `l`/`L` declaration loses the range and "
+					"the palette stops resizing",
 				)
-		self.assertLessEqual(
-			{"PALETTE_MIN_HEIGHT", "PALETTE_MAX_HEIGHT"},
-			pysource.referenced_names(settings),
-		)
 
 	def test_the_stored_height_is_not_keyed_off_the_localised_name(self):
 		# The SDK derives its key from self.name, which Glyphs.localize

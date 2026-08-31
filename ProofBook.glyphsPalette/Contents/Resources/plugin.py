@@ -130,14 +130,6 @@ class ProofBookPalette(PalettePlugin):
 	def settings(self):
 		self.name = Glyphs.localize({"en": "ProofBook"})
 
-		# The SDK reads the palette's height range off these two attributes,
-		# through accessors it declares with typed selectors; overriding
-		# minHeight/maxHeight in Python instead leaves `init` to fill them
-		# from the view's frame, which is one number, so Glyphs sees a fixed
-		# height and draws no resize handle at the foot of the palette.
-		self.min = PALETTE_MIN_HEIGHT
-		self.max = PALETTE_MAX_HEIGHT
-
 		# Nothing here may touch the disk: settings() runs while the document
 		# window is being built. The proof-book is resolved when this
 		# palette's window becomes key instead. None means "not looked yet",
@@ -456,8 +448,23 @@ class ProofBookPalette(PalettePlugin):
 			print("ProofBook: %s" % message)
 
 	# -- Palette chrome ---------------------------------------------------
+	#
+	# All four are redeclared at the width Glyphs itself uses. Its palette
+	# properties are `Tq` and `TQ` — NSInteger and NSUInteger, 64-bit — while
+	# the Python SDK declares these selectors `l` and `L`, which are 32-bit.
+	# A range read at the wrong width never arrives, and a palette with no
+	# usable range is drawn at a fixed height with no resize handle at its
+	# foot. The bundled Layers palette, which has one, declares `q` and `Q`.
 
-	@objc.typedSelector(b"L@:")
+	@objc.typedSelector(b"q@:")
+	def minHeight(self):
+		return PALETTE_MIN_HEIGHT
+
+	@objc.typedSelector(b"q@:")
+	def maxHeight(self):
+		return PALETTE_MAX_HEIGHT
+
+	@objc.typedSelector(b"Q@:")
 	def currentHeight(self):
 		stored = Glyphs.defaults[VIEW_HEIGHT_KEY]
 		try:
@@ -466,7 +473,7 @@ class ProofBookPalette(PalettePlugin):
 			return PALETTE_MIN_HEIGHT
 		return max(PALETTE_MIN_HEIGHT, min(PALETTE_MAX_HEIGHT, height))
 
-	@objc.typedSelector(b"v@:L")
+	@objc.typedSelector(b"v@:Q")
 	def setCurrentHeight_(self, newHeight):
 		if PALETTE_MIN_HEIGHT <= newHeight <= PALETTE_MAX_HEIGHT:
 			Glyphs.defaults[VIEW_HEIGHT_KEY] = int(newHeight)

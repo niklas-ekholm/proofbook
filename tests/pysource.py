@@ -152,3 +152,18 @@ def module_constant(tree, name):
 			if isinstance(target, ast.Name) and target.id == name:
 				return ast.literal_eval(node.value)
 	return None
+
+
+def typed_selector_encoding(tree, name):
+	"""The `objc.typedSelector(b"...")` encoding on a method, or None."""
+	node = function(tree, name)
+	if node is None:
+		return None
+	for decorator in node.decorator_list:
+		if not isinstance(decorator, ast.Call):
+			continue
+		if dotted_name(decorator.func) != "objc.typedSelector":
+			continue
+		if decorator.args:
+			return ast.literal_eval(decorator.args[0])
+	return None
