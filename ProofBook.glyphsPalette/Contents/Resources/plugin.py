@@ -152,6 +152,11 @@ SCROLL_BORDER = 1
 # both on the same centre line, so a page's subject sits under the subject of
 # the folder holding it, one indent step further in.
 ROW_MARGIN = PALETTE_MARGIN - SCROLL_BORDER
+# macOS gives a table 24pt rows, which is sized for a row with an icon in it.
+# A proof-book worth browsing is long, the palette is the height of a sidebar
+# panel, and every point of row is a page further down the scroll — so the
+# rows are as close as the tallest thing in them, the owner pill, allows.
+ROW_HEIGHT = 20
 ROW_INDENT = 11
 MARKER_WIDTH = 14
 SWATCH_DIAMETER = 9
@@ -646,6 +651,9 @@ if vanilla is not None:
 			table = self.getNSTableView()
 			table.setStyle_(NSTableViewStylePlain)
 			table.setIntercellSpacing_((0.0, 0.0))
+			# Set after the columns are built: `_buildColumns` measures the
+			# cell and writes a row height of its own, and it runs last.
+			table.setRowHeight_(ROW_HEIGHT)
 
 	class ProofBookRowCell(vanilla.Group):
 		"""A tree row: swatch, subject, owner pill, and the filename tooltip.
