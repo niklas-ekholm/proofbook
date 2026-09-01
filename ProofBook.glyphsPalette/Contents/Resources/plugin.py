@@ -27,6 +27,7 @@ from AppKit import (
 	NSBackgroundStyleEmphasized,
 	NSBezierPath,
 	NSColor,
+	NSCompositingOperationSourceOver,
 	NSEventPhaseBegan,
 	NSEventPhaseNone,
 	NSFont,
@@ -34,6 +35,9 @@ from AppKit import (
 	NSFontWeightSemibold,
 	NSForegroundColorAttributeName,
 	NSGraphicsContext,
+	NSImage,
+	NSImageSymbolConfiguration,
+	NSImageSymbolScaleSmall,
 	NSLineBreakByTruncatingTail,
 	NSMakeRect,
 	NSMutableParagraphStyle,
@@ -41,13 +45,14 @@ from AppKit import (
 	NSParagraphStyleAttributeName,
 	NSScreen,
 	NSScrollView,
+	NSTableViewStylePlain,
 	NSTextField,
 	NSView,
 	NSViewHeightSizable,
 	NSViewWidthSizable,
 	NSWindowDidBecomeKeyNotification,
 )
-from Foundation import NSObject
+from Foundation import NSObject, NSZeroRect
 from GlyphsApp import DOCUMENTWASSAVED, Glyphs
 from GlyphsApp.plugins import PalettePlugin
 
@@ -125,18 +130,42 @@ VIEW_HEIGHT_KEY = "com.niklasekholm.ProofBookPalette.ViewHeight"
 # the wait is bounded rather than assumed.
 ATTACH_ATTEMPTS = 10
 
+# The palette's left margin, and the one number the whole palette lines up
+# on. Glyphs draws the section header — the palette's name and its collapse
+# caret — 13pt in, and ProofBook sits directly beneath it: the coverage bar,
+# its caption and the swatch of a top-level row all start on that line, so
+# the panel reads as one column rather than three things that nearly agree.
+PALETTE_MARGIN = 13
+# An NSTextField holds its text a little inside its own frame, so a field
+# placed on the margin draws its text past it. Measured off a rendered
+# palette, not guessed: at 2 the caption sat two points right of the bar.
+TEXT_FIELD_INSET = 4
+# The scroll view's border: a table's own coordinates start just inside it,
+# and a row drawn at the margin would land a point past everything above.
+SCROLL_BORDER = 1
+
 # Row geometry. The tree is a flat List2 with the indentation computed in
 # Python (ADR-0002), and now that a row draws a swatch and a pill the indent
 # is geometry rather than spaces: leading spaces cannot move a circle.
 #
-# The marker column holds either a folder's disclosure glyph or a page's
-# status swatch, so a page's subject sits under the subject of the folder
-# holding it, one indent step further in.
-ROW_MARGIN = 6
+# The marker column holds either a folder's caret or a page's status swatch,
+# both on the same centre line, so a page's subject sits under the subject of
+# the folder holding it, one indent step further in.
+ROW_MARGIN = PALETTE_MARGIN - SCROLL_BORDER
 ROW_INDENT = 11
 MARKER_WIDTH = 14
 SWATCH_DIAMETER = 9
 SUBJECT_FONT_SIZE = 11
+
+# The folder caret. Glyphs' own palette headers use the system chevron, and a
+# tree that draws its own arrowhead beside one is a tree drawn by someone
+# else — so this is the same symbol, one size down from the header's.
+CHEVRON_EXPANDED = "chevron.down"
+CHEVRON_COLLAPSED = "chevron.right"
+CHEVRON_POINT_SIZE = 11
+# The fallback if SF Symbols ever fails to answer. Glyphs 4 needs a macOS
+# that has them, so this is a folder still showing its state rather than a
+# path anyone should expect to see.
 DISCLOSURE_FONT_SIZE = 9
 DISCLOSURE_EXPANDED = "▾"
 DISCLOSURE_COLLAPSED = "▸"
@@ -155,7 +184,6 @@ SUBJECT_GAP = 5
 # The coverage bar: a 4pt capsule above the tree, with `N of M done` beneath.
 # The palette's answer to the question the whole product exists for, in about
 # the height of one row.
-COVERAGE_MARGIN = 8
 COVERAGE_BAR_TOP = 7
 COVERAGE_BAR_HEIGHT = 4
 COVERAGE_CAPTION_TOP = 13
@@ -263,6 +291,29 @@ def _draw_centered(string, rect):
 	)
 
 
+def _chevron(expanded, color):
+	"""The system chevron, tinted — the same one Glyphs' palette headers use.
+
+	Returns None where SF Symbols cannot answer, which is a macOS older than
+	any Glyphs 4 runs on; the caller falls back to a drawn arrowhead rather
+	than leaving a folder with no state on it at all.
+	"""
+	image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+		CHEVRON_EXPANDED if expanded else CHEVRON_COLLAPSED, None
+	)
+	if image is None:
+		return None
+	configuration = NSImageSymbolConfiguration.configurationWithPointSize_weight_scale_(
+		CHEVRON_POINT_SIZE, NSFontWeightSemibold, NSImageSymbolScaleSmall
+	)
+	# A template image is not tinted by the colour that happens to be set, so
+	# the colour travels in the configuration.
+	configuration = configuration.configurationByApplyingConfiguration_(
+		NSImageSymbolConfiguration.configurationWithHierarchicalColor_(color)
+	)
+	return image.imageWithSymbolConfiguration_(configuration)
+
+
 def _capsule(rect):
 	radius = rect.size.height / 2.0
 	return NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
@@ -331,27 +382,59 @@ class ProofBookRowView(NSView):
 
 	@objc.python_method
 	def _drawDisclosure(self, marker, expanded, emphasized):
-		string = _attributed(
-			DISCLOSURE_EXPANDED if expanded else DISCLOSURE_COLLAPSED,
-			NSFont.systemFontOfSize_(DISCLOSURE_FONT_SIZE),
-			_muted_color(emphasized),
-		)
-		width = string.size().width
-		_draw_centered(
-			string,
+		"""The folder's caret, starting where a page's swatch starts.
+
+		Left-aligned rather than centred in its column: a folder and the
+		pages beside it are at the same depth, and the eye reads the left
+		edge of the ink, not the middle of a column it cannot see. Centring
+		puts every folder a couple of points out of the one margin the
+		palette keeps.
+		"""
+		color = _muted_color(emphasized)
+		image = _chevron(expanded, color)
+		if image is None:
+			_draw_centered(
+				_attributed(
+					DISCLOSURE_EXPANDED if expanded else DISCLOSURE_COLLAPSED,
+					NSFont.systemFontOfSize_(DISCLOSURE_FONT_SIZE),
+					color,
+				),
+				NSMakeRect(
+					marker.origin.x,
+					marker.origin.y,
+					marker.size.width,
+					marker.size.height,
+				),
+			)
+			return
+		size = image.size()
+		image.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
 			NSMakeRect(
-				marker.origin.x + (marker.size.width - width) / 2.0,
-				marker.origin.y,
-				width,
-				marker.size.height,
+				marker.origin.x,
+				marker.origin.y + (marker.size.height - size.height) / 2.0,
+				size.width,
+				size.height,
 			),
+			NSZeroRect,
+			NSCompositingOperationSourceOver,
+			1.0,
+			# The row view is flipped and the symbol is not: without this the
+			# chevron draws upside down, which for `chevron.down` is a
+			# `chevron.up` and reads as a folder that is already open.
+			True,
+			None,
 		)
 
 	@objc.python_method
 	def _drawSwatch(self, marker, status, emphasized):
-		"""`TODO` an empty outline, `WIP` amber, `DONE` green (spec §4)."""
+		"""`TODO` an empty outline, `WIP` amber, `DONE` green (spec §4).
+
+		Left-aligned in the marker column rather than centred in it: this is
+		the leftmost ink in the tree, and it is what lines up with the
+		coverage bar above and with the section header above that.
+		"""
 		box = NSMakeRect(
-			marker.origin.x + (marker.size.width - SWATCH_DIAMETER) / 2.0,
+			marker.origin.x,
 			(marker.size.height - SWATCH_DIAMETER) / 2.0,
 			SWATCH_DIAMETER,
 			SWATCH_DIAMETER,
@@ -553,6 +636,17 @@ if vanilla is not None:
 
 		nsScrollViewClass = ProofBookScrollView
 
+		def __init__(self, *args, **kwargs):
+			super().__init__(*args, **kwargs)
+			# macOS gives a table `NSTableViewStyleInset` by default, which
+			# holds every row 17pt in from the view's edge — a margin nothing
+			# else in the palette shares, and one no amount of drawing can
+			# undo from inside a cell that is clipped to it. Plain hands the
+			# row its full width and lets ProofBook keep one left margin.
+			table = self.getNSTableView()
+			table.setStyle_(NSTableViewStylePlain)
+			table.setIntercellSpacing_((0.0, 0.0))
+
 	class ProofBookRowCell(vanilla.Group):
 		"""A tree row: swatch, subject, owner pill, and the filename tooltip.
 
@@ -704,14 +798,14 @@ class ProofBookPalette(PalettePlugin):
 		# proof-book, not the visible part of it — which is why it is fed
 		# from the listing rather than the rows.
 		group.coverage = ProofBookCoverageBar(
-			(COVERAGE_MARGIN, COVERAGE_BAR_TOP, -COVERAGE_MARGIN, COVERAGE_BAR_HEIGHT)
+			(PALETTE_MARGIN, COVERAGE_BAR_TOP, -PALETTE_MARGIN, COVERAGE_BAR_HEIGHT)
 		)
 		group.coverage.show(False)
 		group.coverageCaption = vanilla.TextBox(
 			(
-				COVERAGE_MARGIN,
+				PALETTE_MARGIN - TEXT_FIELD_INSET,
 				COVERAGE_CAPTION_TOP,
-				-COVERAGE_MARGIN,
+				-PALETTE_MARGIN,
 				COVERAGE_CAPTION_HEIGHT,
 			),
 			"",

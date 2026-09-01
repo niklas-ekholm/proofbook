@@ -344,6 +344,34 @@ class AdapterRules(unittest.TestCase):
 			"held before, which is a row from somewhere else in the tree",
 		)
 
+	def test_the_palette_keeps_one_left_margin(self):
+		# Glyphs draws the section header on a margin ProofBook does not
+		# choose, and everything under it lines up on that: the coverage bar,
+		# its caption, and the swatch of a top-level row. A table left on its
+		# default `NSTableViewStyleInset` holds its rows 17pt further in,
+		# where no amount of drawing can reach them — a cell is clipped to
+		# the frame the style gives it.
+		self.assertIn(
+			"NSTableViewStylePlain",
+			pysource.referenced_names(self.adapter),
+			"the tree is back on the inset style, which indents every row "
+			"past the margin the rest of the palette keeps",
+		)
+		view = pysource.function(self.adapter, "_vanilla_view")
+		self.assertIn(
+			"PALETTE_MARGIN",
+			pysource.referenced_names(view),
+			"the coverage bar and its caption are placed on some other "
+			"number than the palette's margin",
+		)
+		draw = pysource.function(self.adapter, "drawRect_")
+		self.assertIn(
+			"ROW_MARGIN",
+			pysource.referenced_names(draw),
+			"a row no longer starts on the margin the rest of the palette "
+			"lines up on",
+		)
+
 	def test_an_untagged_page_cannot_be_drawn_differently_from_a_todo(self):
 		# ADR-0001: an untagged page *is* TODO, and the palette must not
 		# invent a distinction the filename grammar does not make. The
