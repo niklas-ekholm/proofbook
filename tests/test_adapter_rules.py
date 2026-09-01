@@ -112,9 +112,45 @@ class AdapterRules(unittest.TestCase):
 	def test_the_tree_is_a_flat_list_not_an_outline_view(self):
 		# ADR-0002: vanilla ships no NSOutlineView wrapper, so the hierarchy
 		# is a flat List2 whose rows carry a depth, indented in Python.
-		self.assertIn("vanilla.List2", pysource.called_names(self.adapter))
+		self.assertEqual(
+			{"vanilla.List2"},
+			pysource.class_bases(self.adapter, "ProofBookTree"),
+			"the tree is a List2 subclass so it can install its own scroll "
+			"view; the List2 half of that is ADR-0002",
+		)
+		self.assertIn("ProofBookTree", pysource.called_names(self.adapter))
 		self.assertNotIn(
 			"NSOutlineView", pysource.referenced_names(self.adapter)
+		)
+
+	def test_the_tree_hands_the_sidebar_the_scrolling_it_cannot_use(self):
+		# Glyphs' palette sidebar scrolls, and an NSScrollView that consumes
+		# every gesture beginning inside it rubber-bands at its own end
+		# instead of letting the sidebar move — which is how a palette below
+		# ProofBook becomes unreachable, and how ProofBook's own resize pill
+		# does when the sidebar has scrolled it past the fold.
+		self.assertEqual(
+			{"NSScrollView"},
+			pysource.class_bases(self.adapter, "ProofBookScrollView"),
+		)
+		self.assertEqual(
+			"ProofBookScrollView",
+			pysource.assigned_value(self.adapter, "nsScrollViewClass"),
+			"vanilla's own seam: ScrollView.__init__ builds from it, so a "
+			"tree that does not set it gets a plain NSScrollView back",
+		)
+		wheel = pysource.function(self.adapter, "scrollWheel_")
+		self.assertIsNotNone(wheel)
+		self.assertIn(
+			"nextResponder.scrollWheel_",
+			pysource.called_names(wheel),
+			"a gesture the tree cannot use has to reach the sidebar",
+		)
+		self.assertIn(
+			"NSEventPhaseBegan",
+			pysource.referenced_names(wheel),
+			"the decision is made once per gesture; deciding per event "
+			"lets a flick change hands halfway down",
 		)
 
 	def test_a_row_carries_its_filename_as_a_tooltip(self):

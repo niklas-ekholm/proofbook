@@ -113,6 +113,14 @@ def function(tree, name):
 	return None
 
 
+def class_bases(tree, name):
+	"""The dotted base-class names of the class called `name`, or None."""
+	for node in ast.walk(tree):
+		if isinstance(node, ast.ClassDef) and node.name == name:
+			return {dotted_name(base) for base in node.bases}
+	return None
+
+
 def called_names(node):
 	"""Every dotted callee name under `node`, bare `open(...)` included."""
 	names = set()
@@ -151,6 +159,17 @@ def module_constant(tree, name):
 		for target in node.targets:
 			if isinstance(target, ast.Name) and target.id == name:
 				return ast.literal_eval(node.value)
+	return None
+
+
+def assigned_value(tree, name):
+	"""The dotted name assigned to `name = ...` anywhere, or None."""
+	for node in ast.walk(tree):
+		if not isinstance(node, ast.Assign):
+			continue
+		for target in node.targets:
+			if isinstance(target, ast.Name) and target.id == name:
+				return dotted_name(node.value)
 	return None
 
 

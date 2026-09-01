@@ -23,10 +23,13 @@ import sys
 
 import objc
 from AppKit import (
+	NSEventPhaseBegan,
+	NSEventPhaseNone,
 	NSFont,
 	NSMakeRect,
 	NSNotificationCenter,
 	NSScreen,
+	NSScrollView,
 	NSTextField,
 	NSView,
 	NSViewHeightSizable,
@@ -162,7 +165,90 @@ def _row_text(row):
 	return INDENT * row.depth + lead + row.subject
 
 
+# Scroll chaining. Glyphs' palette sidebar scrolls, and ProofBook sits in
+# that stack — but an NSScrollView consumes every wheel event that begins
+# inside it and rubber-bands at its own end rather than passing the rest on.
+# So a designer scrolling over the tree to reach a panel below ProofBook gets
+# a bounce and nothing else, and has to start the gesture over a neighbouring
+# panel and let the momentum carry through. That is the documented escape from
+# a palette dragged taller than its screen, and it should not be one.
+#
+# Defined at module scope, which for a palette is once per process: `plugin.py`
+# is imported once and instantiated per document window. Registering an
+# Objective-C class name twice in one process raises, so do not move this
+# inside a function.
+class ProofBookScrollView(NSScrollView):
+	"""A scroll view that hands on the gestures it cannot use itself."""
+
+	@objc.python_method
+	def _canScrollFurther(self, event):
+		"""Is there anywhere left to go in this event's direction?"""
+		delta = event.scrollingDeltaY()
+		if not delta:
+			# Horizontal-only: keep it. The sidebar scrolls vertically, so
+			# there is nothing to hand it.
+			return True
+		document = self.documentView()
+		if document is None:
+			return False
+		# Asked of the scroll view, not the clip view: this one is documented
+		# to come back in the document's own coordinates, which is what the
+		# frame below is measured in.
+		visible = self.documentVisibleRect()
+		height = document.frame().size.height
+		# A hair of tolerance: these are floats off a live layout, and an
+		# exact compare leaves the last pixel of travel swallowing gestures
+		# forever at what looks to the designer like the end of the list.
+		edge = 0.5
+		atStart = visible.origin.y <= edge
+		atEnd = visible.origin.y + visible.size.height >= height - edge
+		# In a flipped view — NSTableView is one — the origin is the top, so
+		# a positive delta (content moving down) heads for it. In an
+		# unflipped view the origin is the bottom and the sense inverts.
+		if document.isFlipped():
+			towardStart = delta > 0
+		else:
+			towardStart = delta < 0
+		return not (atStart if towardStart else atEnd)
+
+	def scrollWheel_(self, event):
+		# The decision is made once, at the start of the gesture, and held
+		# for every event that follows it — including the momentum, which
+		# arrives with no phase of its own. Deciding per event instead lets
+		# a flick change hands halfway down, which reads as the sidebar
+		# lurching, and is what macOS itself avoids by deciding once.
+		try:
+			phase = event.phase()
+			momentum = event.momentumPhase()
+		except AttributeError:
+			phase = momentum = NSEventPhaseNone
+		beginning = bool(phase & NSEventPhaseBegan)
+		# A mouse wheel has no phases at all: every event is its own gesture.
+		unphased = phase == NSEventPhaseNone and momentum == NSEventPhaseNone
+		if beginning or unphased:
+			self._proofbookHandsOn = not self._canScrollFurther(event)
+		# `getattr`: the first event of a gesture Glyphs started before this
+		# view existed has no decision stored, and inventing one that hands
+		# the tree's own scrolling away is the worse guess.
+		if getattr(self, "_proofbookHandsOn", False):
+			nextResponder = self.nextResponder()
+			if nextResponder is not None:
+				nextResponder.scrollWheel_(event)
+				return
+		objc.super(ProofBookScrollView, self).scrollWheel_(event)
+
+
 if vanilla is not None:
+
+	class ProofBookTree(vanilla.List2):
+		"""The tree, scrolling inside a view that chains past its own end.
+
+		`nsScrollViewClass` is vanilla's own seam — `ScrollView.__init__`
+		builds from it — so this needs no reaching into vanilla's internals
+		and no swapping of a view it has already built.
+		"""
+
+		nsScrollViewClass = ProofBookScrollView
 
 	class ProofBookRowCell(vanilla.EditTextList2Cell):
 		"""A tree row: the drawn text, and the raw filename as its tooltip.
@@ -179,6 +265,7 @@ if vanilla is not None:
 			self.getNSTextField().setToolTip_(row.filename)
 
 else:
+	ProofBookTree = None
 	ProofBookRowCell = None
 
 
@@ -283,7 +370,7 @@ class ProofBookPalette(PalettePlugin):
 		# One column, one cell class: the swatch, the owner pill and the
 		# coverage bar are issue #17. Sorting is off because the core already
 		# ordered the rows, and a header would only offer to undo that.
-		group.tree = vanilla.List2(
+		group.tree = ProofBookTree(
 			(0, 0, 0, 0),
 			items=[],
 			columnDescriptions=[
