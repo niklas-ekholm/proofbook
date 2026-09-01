@@ -55,7 +55,7 @@ if _BUNDLE_RESOURCES not in sys.path:
 	sys.path.append(_BUNDLE_RESOURCES)
 
 import proofbook  # noqa: E402  (only importable once sys.path is set, above)
-from proofbook import discovery, tree  # noqa: E402
+from proofbook import discovery, frontmatter, tree  # noqa: E402
 
 PROOFBOOK_FORCE_NO_VANILLA = False
 
@@ -299,6 +299,12 @@ class ProofBookPalette(PalettePlugin):
 		self.rows = []
 		self.expanded = set()
 		self.selectedPath = None
+		# The tab ProofBook opened, and the exact text it pushed there. Both
+		# are needed by the refresh rules (spec §6): a page that changed on
+		# disk is re-pushed only while the tab still holds what ProofBook put
+		# there, because anything else in it is the designer's typing.
+		self.proofTab = None
+		self.pushedText = None
 		# Set while the adapter drives the List2's selection itself, so the
 		# selection callback can tell a designer's click from its own writing.
 		self.settingSelection = False
@@ -510,9 +516,71 @@ class ProofBookPalette(PalettePlugin):
 		row = self.rows[indexes[0]]
 		if not row.is_dir:
 			self.selectedPath = row.path
-			return  # Pushing it into the Edit view is issue #18.
+			self._display_page(row.path)
+			return
 		self.expanded = tree.toggled(self.expanded, row.path)
 		self._draw_tree()
+
+	# -- The Edit view ----------------------------------------------------
+
+	@objc.python_method
+	def _display_page(self, path):
+		"""Show a selected proof-page's proof text in the Edit view.
+
+		This read is inline and on the main thread, and is **not yet routed**:
+		ADR-0004 allows an inline read only for a file that is already
+		materialised, and nothing here asks. Selecting a page that a cloud
+		provider is holding as a placeholder therefore blocks Glyphs until it
+		downloads. Issue #25 is where the `SF_DATALESS` check and the worker
+		thread land, and this is the read they route.
+
+		Stripping the header is the core's (ADR-0005): every lenient form
+		ADR-0003 accepts is string work, and string work belongs on the side
+		of the seam a test can reach.
+		"""
+		filepath = self._page_path(path)
+		try:
+			with open(filepath, "rb") as handle:
+				data = handle.read()
+		except OSError:
+			# The Edit view is left exactly as it is and the row stays
+			# selected: a page that could not be read has replaced nothing.
+			self._alert(
+				"Could not read “%s”; it may not be downloaded yet."
+				% os.path.basename(filepath)
+			)
+			return
+		self._push_text(frontmatter.read(data).text)
+
+	@objc.python_method
+	def _push_text(self, text):
+		"""Write into ProofBook's own tab, or open one. Never the designer's.
+
+		A tab the designer opened is theirs — it may hold a proof they have
+		been editing for an hour — so the only tab ProofBook ever writes to is
+		one it opened itself, and only while that is the tab in front.
+		"""
+		font = self._font()
+		if font is None:
+			return
+		# `==`, not `is`: two PyObjC proxies for one tab are two objects, and
+		# an identity test would open a second tab on every selection.
+		tab = font.currentTab
+		if tab is None or self.proofTab is None or tab != self.proofTab:
+			tab = font.newTab(text)
+		else:
+			tab.text = text
+		if tab is None:
+			return
+		self.proofTab = tab
+		self.pushedText = text
+		# `redraw`, not `forceRedraw`: this tab changed, not every open one.
+		tab.redraw()
+
+	@objc.python_method
+	def _page_path(self, path):
+		"""A row's path — relative to the proof-book, `/`-separated — on disk."""
+		return os.path.join(self.bookPath, *path.split(tree.PATH_SEPARATOR))
 
 	# -- Resolving the proof-book ----------------------------------------
 
@@ -537,15 +605,20 @@ class ProofBookPalette(PalettePlugin):
 		return document == mine
 
 	@objc.python_method
-	def _font_filepath(self):
-		"""This palette's own font's path — never Glyphs.currentDocument.
+	def _font(self):
+		"""This palette's own font — never Glyphs.currentDocument.
 
 		There is one palette instance per document window, so the current
 		document is somebody else's font as often as not.
 		"""
 		controller = self.windowController()
 		document = controller.document() if controller else None
-		font = document.font if document else None
+		return document.font if document else None
+
+	@objc.python_method
+	def _font_filepath(self):
+		"""Where this palette's font is saved, or None while it never has been."""
+		font = self._font()
 		filepath = getattr(font, "filepath", None) if font else None
 		return str(filepath) if filepath else None
 
