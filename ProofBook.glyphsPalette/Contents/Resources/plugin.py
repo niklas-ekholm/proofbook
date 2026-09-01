@@ -23,9 +23,13 @@ import sys
 
 import objc
 from AppKit import (
+	NSEventPhaseBegan,
+	NSEventPhaseNone,
 	NSFont,
 	NSMakeRect,
 	NSNotificationCenter,
+	NSScreen,
+	NSScrollView,
 	NSTextField,
 	NSView,
 	NSViewHeightSizable,
@@ -51,7 +55,7 @@ if _BUNDLE_RESOURCES not in sys.path:
 	sys.path.append(_BUNDLE_RESOURCES)
 
 import proofbook  # noqa: E402  (only importable once sys.path is set, above)
-from proofbook import discovery, tree  # noqa: E402
+from proofbook import discovery, frontmatter, tree  # noqa: E402
 
 PROOFBOOK_FORCE_NO_VANILLA = False
 
@@ -73,11 +77,23 @@ PALETTE_WIDTH = 180
 # height never tracks its content, so a proof-book of three pages and one of
 # three hundred take the same space until the designer drags the divider.
 PALETTE_MIN_HEIGHT = 180
-# 1200 is measured, not round: about as tall as the palette can be on a
-# 1920x1243 display with the other panels collapsed. A large proof-book runs
-# well past 400 rows, and on a big display the scroll was doing work the
-# screen had room for.
+# The absolute cap, not the ceiling — see `_ceiling_height`. 1200 is measured,
+# not round: about as tall as the palette can be on a 1920x1243 display with
+# the other panels collapsed. A large proof-book runs well past 400 rows, and
+# on a big display the scroll was doing work the screen had room for.
 PALETTE_MAX_HEIGHT = 1200
+# ...but a height measured on one display outlives it. The palette is resized
+# by the pill along its foot, and the stored height is per-designer, not
+# per-screen: drag to 1200 on the big display, reopen on a laptop half that
+# tall, and the pill sits below the fold of a sidebar that scrolls — so the
+# palette cannot be dragged back down by the only handle it has. The ceiling
+# is therefore a fraction of the screen the palette is actually on, and
+# PALETTE_MAX_HEIGHT only caps it on a display bigger still.
+#
+# 0.8, not 1.0: the panels stacked above ProofBook push its foot down the
+# sidebar, so a palette exactly as tall as the screen still hides its own
+# handle. The fraction is provisional, like everything else in the MVP.
+PALETTE_MAX_HEIGHT_FRACTION = 0.8
 
 # The strip along the foot of the palette that Glyphs resizes by. Read off
 # `-[GSPaletteView mouseDown:]`, which converts the click into view
@@ -107,6 +123,31 @@ DISCLOSURE_COLLAPSED = "▸ "
 PAGE_LEAD = "  "
 
 
+def _ceiling_height(window=None):
+	"""The tallest the palette may be on the screen it is on right now.
+
+	Asked of the palette's own window where there is one, because a designer
+	with two displays has two answers. `screen()` is None for a window on a
+	display that has just been disconnected, which is exactly the moment this
+	matters, so both that and a missing window fall back to the main screen
+	and then to the absolute cap.
+
+	`visibleFrame`, not `frame`: the menu bar and Dock are not sidebar.
+	"""
+	available = None
+	for screen in (window.screen() if window is not None else None,
+			NSScreen.mainScreen()):
+		if screen is not None:
+			available = screen.visibleFrame().size.height
+			break
+	if not available:
+		return PALETTE_MAX_HEIGHT
+	ceiling = int(available * PALETTE_MAX_HEIGHT_FRACTION)
+	# The floor wins a fight with the ceiling: a palette below its own minimum
+	# is one the SDK will not give a resize handle at all.
+	return max(PALETTE_MIN_HEIGHT, min(PALETTE_MAX_HEIGHT, ceiling))
+
+
 def _report_lines():
 	return [
 		"ProofBook",
@@ -124,7 +165,90 @@ def _row_text(row):
 	return INDENT * row.depth + lead + row.subject
 
 
+# Scroll chaining. Glyphs' palette sidebar scrolls, and ProofBook sits in
+# that stack — but an NSScrollView consumes every wheel event that begins
+# inside it and rubber-bands at its own end rather than passing the rest on.
+# So a designer scrolling over the tree to reach a panel below ProofBook gets
+# a bounce and nothing else, and has to start the gesture over a neighbouring
+# panel and let the momentum carry through. That is the documented escape from
+# a palette dragged taller than its screen, and it should not be one.
+#
+# Defined at module scope, which for a palette is once per process: `plugin.py`
+# is imported once and instantiated per document window. Registering an
+# Objective-C class name twice in one process raises, so do not move this
+# inside a function.
+class ProofBookScrollView(NSScrollView):
+	"""A scroll view that hands on the gestures it cannot use itself."""
+
+	@objc.python_method
+	def _canScrollFurther(self, event):
+		"""Is there anywhere left to go in this event's direction?"""
+		delta = event.scrollingDeltaY()
+		if not delta:
+			# Horizontal-only: keep it. The sidebar scrolls vertically, so
+			# there is nothing to hand it.
+			return True
+		document = self.documentView()
+		if document is None:
+			return False
+		# Asked of the scroll view, not the clip view: this one is documented
+		# to come back in the document's own coordinates, which is what the
+		# frame below is measured in.
+		visible = self.documentVisibleRect()
+		height = document.frame().size.height
+		# A hair of tolerance: these are floats off a live layout, and an
+		# exact compare leaves the last pixel of travel swallowing gestures
+		# forever at what looks to the designer like the end of the list.
+		edge = 0.5
+		atStart = visible.origin.y <= edge
+		atEnd = visible.origin.y + visible.size.height >= height - edge
+		# In a flipped view — NSTableView is one — the origin is the top, so
+		# a positive delta (content moving down) heads for it. In an
+		# unflipped view the origin is the bottom and the sense inverts.
+		if document.isFlipped():
+			towardStart = delta > 0
+		else:
+			towardStart = delta < 0
+		return not (atStart if towardStart else atEnd)
+
+	def scrollWheel_(self, event):
+		# The decision is made once, at the start of the gesture, and held
+		# for every event that follows it — including the momentum, which
+		# arrives with no phase of its own. Deciding per event instead lets
+		# a flick change hands halfway down, which reads as the sidebar
+		# lurching, and is what macOS itself avoids by deciding once.
+		try:
+			phase = event.phase()
+			momentum = event.momentumPhase()
+		except AttributeError:
+			phase = momentum = NSEventPhaseNone
+		beginning = bool(phase & NSEventPhaseBegan)
+		# A mouse wheel has no phases at all: every event is its own gesture.
+		unphased = phase == NSEventPhaseNone and momentum == NSEventPhaseNone
+		if beginning or unphased:
+			self._proofbookHandsOn = not self._canScrollFurther(event)
+		# `getattr`: the first event of a gesture Glyphs started before this
+		# view existed has no decision stored, and inventing one that hands
+		# the tree's own scrolling away is the worse guess.
+		if getattr(self, "_proofbookHandsOn", False):
+			nextResponder = self.nextResponder()
+			if nextResponder is not None:
+				nextResponder.scrollWheel_(event)
+				return
+		objc.super(ProofBookScrollView, self).scrollWheel_(event)
+
+
 if vanilla is not None:
+
+	class ProofBookTree(vanilla.List2):
+		"""The tree, scrolling inside a view that chains past its own end.
+
+		`nsScrollViewClass` is vanilla's own seam — `ScrollView.__init__`
+		builds from it — so this needs no reaching into vanilla's internals
+		and no swapping of a view it has already built.
+		"""
+
+		nsScrollViewClass = ProofBookScrollView
 
 	class ProofBookRowCell(vanilla.EditTextList2Cell):
 		"""A tree row: the drawn text, and the raw filename as its tooltip.
@@ -141,6 +265,7 @@ if vanilla is not None:
 			self.getNSTextField().setToolTip_(row.filename)
 
 else:
+	ProofBookTree = None
 	ProofBookRowCell = None
 
 
@@ -154,8 +279,12 @@ class ProofBookPalette(PalettePlugin):
 		# The height range, read by the SDK's own minHeight/maxHeight. Set
 		# here because `init` fills both from the view's frame — one number,
 		# and a palette with no range cannot be resized.
+		#
+		# No window to ask yet: `settings` runs while the document window is
+		# being built. The main screen is the best answer available, and
+		# `currentHeight` refreshes the ceiling once the window is known.
 		self.min = PALETTE_MIN_HEIGHT
-		self.max = PALETTE_MAX_HEIGHT
+		self.max = _ceiling_height()
 
 		# Nothing here may touch the disk: settings() runs while the document
 		# window is being built. The proof-book is resolved when this
@@ -170,6 +299,12 @@ class ProofBookPalette(PalettePlugin):
 		self.rows = []
 		self.expanded = set()
 		self.selectedPath = None
+		# The tab ProofBook opened, and the exact text it pushed there. Both
+		# are needed by the refresh rules (spec §6): a page that changed on
+		# disk is re-pushed only while the tab still holds what ProofBook put
+		# there, because anything else in it is the designer's typing.
+		self.proofTab = None
+		self.pushedText = None
 		# Set while the adapter drives the List2's selection itself, so the
 		# selection callback can tell a designer's click from its own writing.
 		self.settingSelection = False
@@ -241,7 +376,7 @@ class ProofBookPalette(PalettePlugin):
 		# One column, one cell class: the swatch, the owner pill and the
 		# coverage bar are issue #17. Sorting is off because the core already
 		# ordered the rows, and a header would only offer to undo that.
-		group.tree = vanilla.List2(
+		group.tree = ProofBookTree(
 			(0, 0, 0, 0),
 			items=[],
 			columnDescriptions=[
@@ -381,9 +516,71 @@ class ProofBookPalette(PalettePlugin):
 		row = self.rows[indexes[0]]
 		if not row.is_dir:
 			self.selectedPath = row.path
-			return  # Pushing it into the Edit view is issue #18.
+			self._display_page(row.path)
+			return
 		self.expanded = tree.toggled(self.expanded, row.path)
 		self._draw_tree()
+
+	# -- The Edit view ----------------------------------------------------
+
+	@objc.python_method
+	def _display_page(self, path):
+		"""Show a selected proof-page's proof text in the Edit view.
+
+		This read is inline and on the main thread, and is **not yet routed**:
+		ADR-0004 allows an inline read only for a file that is already
+		materialised, and nothing here asks. Selecting a page that a cloud
+		provider is holding as a placeholder therefore blocks Glyphs until it
+		downloads. Issue #25 is where the `SF_DATALESS` check and the worker
+		thread land, and this is the read they route.
+
+		Stripping the header is the core's (ADR-0005): every lenient form
+		ADR-0003 accepts is string work, and string work belongs on the side
+		of the seam a test can reach.
+		"""
+		filepath = self._page_path(path)
+		try:
+			with open(filepath, "rb") as handle:
+				data = handle.read()
+		except OSError:
+			# The Edit view is left exactly as it is and the row stays
+			# selected: a page that could not be read has replaced nothing.
+			self._alert(
+				"Could not read “%s”; it may not be downloaded yet."
+				% os.path.basename(filepath)
+			)
+			return
+		self._push_text(frontmatter.read(data).text)
+
+	@objc.python_method
+	def _push_text(self, text):
+		"""Write into ProofBook's own tab, or open one. Never the designer's.
+
+		A tab the designer opened is theirs — it may hold a proof they have
+		been editing for an hour — so the only tab ProofBook ever writes to is
+		one it opened itself, and only while that is the tab in front.
+		"""
+		font = self._font()
+		if font is None:
+			return
+		# `==`, not `is`: two PyObjC proxies for one tab are two objects, and
+		# an identity test would open a second tab on every selection.
+		tab = font.currentTab
+		if tab is None or self.proofTab is None or tab != self.proofTab:
+			tab = font.newTab(text)
+		else:
+			tab.text = text
+		if tab is None:
+			return
+		self.proofTab = tab
+		self.pushedText = text
+		# `redraw`, not `forceRedraw`: this tab changed, not every open one.
+		tab.redraw()
+
+	@objc.python_method
+	def _page_path(self, path):
+		"""A row's path — relative to the proof-book, `/`-separated — on disk."""
+		return os.path.join(self.bookPath, *path.split(tree.PATH_SEPARATOR))
 
 	# -- Resolving the proof-book ----------------------------------------
 
@@ -408,15 +605,20 @@ class ProofBookPalette(PalettePlugin):
 		return document == mine
 
 	@objc.python_method
-	def _font_filepath(self):
-		"""This palette's own font's path — never Glyphs.currentDocument.
+	def _font(self):
+		"""This palette's own font — never Glyphs.currentDocument.
 
 		There is one palette instance per document window, so the current
 		document is somebody else's font as often as not.
 		"""
 		controller = self.windowController()
 		document = controller.document() if controller else None
-		font = document.font if document else None
+		return document.font if document else None
+
+	@objc.python_method
+	def _font_filepath(self):
+		"""Where this palette's font is saved, or None while it never has been."""
+		font = self._font()
 		filepath = getattr(font, "filepath", None) if font else None
 		return str(filepath) if filepath else None
 
@@ -528,12 +730,26 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.typedSelector(b"L@:")
 	def currentHeight(self):
-		"""The height Glyphs last set, or the minimum on a first run."""
+		"""The stored height, clamped to what fits this screen.
+
+		The stored value is the designer's intent and is deliberately left
+		alone: drag to 1200 on the big display, open the same defaults on a
+		laptop, and the palette comes up short — plug the display back in and
+		the full height returns with nothing to undo.
+
+		`self.max` is refreshed here too. Glyphs reads this at layout time,
+		which is both the moment the screen is known and the moment a screen
+		change has to take effect; a screen-parameters observer would exist
+		only to run this same line, with a lifetime to get wrong.
+		"""
+		ceiling = _ceiling_height(self._window())
+		self.max = ceiling
 		stored = Glyphs.defaults[VIEW_HEIGHT_KEY]
 		try:
-			return int(stored)
+			height = int(stored)
 		except (TypeError, ValueError):
 			return PALETTE_MIN_HEIGHT
+		return max(PALETTE_MIN_HEIGHT, min(height, ceiling))
 
 	@objc.typedSelector(b"v@:L")
 	def setCurrentHeight_(self, newHeight):

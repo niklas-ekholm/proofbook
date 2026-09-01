@@ -6,6 +6,7 @@ Parsing, not grepping: a comment mentioning `Glyphs.currentDocument` should
 not fail a test, and a real call should not pass one.
 """
 
+import ast
 import os
 import unittest
 
@@ -112,9 +113,45 @@ class AdapterRules(unittest.TestCase):
 	def test_the_tree_is_a_flat_list_not_an_outline_view(self):
 		# ADR-0002: vanilla ships no NSOutlineView wrapper, so the hierarchy
 		# is a flat List2 whose rows carry a depth, indented in Python.
-		self.assertIn("vanilla.List2", pysource.called_names(self.adapter))
+		self.assertEqual(
+			{"vanilla.List2"},
+			pysource.class_bases(self.adapter, "ProofBookTree"),
+			"the tree is a List2 subclass so it can install its own scroll "
+			"view; the List2 half of that is ADR-0002",
+		)
+		self.assertIn("ProofBookTree", pysource.called_names(self.adapter))
 		self.assertNotIn(
 			"NSOutlineView", pysource.referenced_names(self.adapter)
+		)
+
+	def test_the_tree_hands_the_sidebar_the_scrolling_it_cannot_use(self):
+		# Glyphs' palette sidebar scrolls, and an NSScrollView that consumes
+		# every gesture beginning inside it rubber-bands at its own end
+		# instead of letting the sidebar move — which is how a palette below
+		# ProofBook becomes unreachable, and how ProofBook's own resize pill
+		# does when the sidebar has scrolled it past the fold.
+		self.assertEqual(
+			{"NSScrollView"},
+			pysource.class_bases(self.adapter, "ProofBookScrollView"),
+		)
+		self.assertEqual(
+			"ProofBookScrollView",
+			pysource.assigned_value(self.adapter, "nsScrollViewClass"),
+			"vanilla's own seam: ScrollView.__init__ builds from it, so a "
+			"tree that does not set it gets a plain NSScrollView back",
+		)
+		wheel = pysource.function(self.adapter, "scrollWheel_")
+		self.assertIsNotNone(wheel)
+		self.assertIn(
+			"nextResponder.scrollWheel_",
+			pysource.called_names(wheel),
+			"a gesture the tree cannot use has to reach the sidebar",
+		)
+		self.assertIn(
+			"NSEventPhaseBegan",
+			pysource.referenced_names(wheel),
+			"the decision is made once per gesture; deciding per event "
+			"lets a flick change hands halfway down",
 		)
 
 	def test_a_row_carries_its_filename_as_a_tooltip(self):
@@ -142,9 +179,53 @@ class AdapterRules(unittest.TestCase):
 					"settings no longer sets %s, so `init` fills it from the "
 					"view's frame and the palette has no range" % attribute,
 				)
+		# The minimum is a constant and is named here; the maximum is not,
+		# because it depends on the screen (see below).
+		self.assertIn("PALETTE_MIN_HEIGHT", pysource.referenced_names(settings))
+
+	def test_the_palette_height_ceiling_is_relative_to_the_screen(self):
+		# The palette is resized only by the pill along its foot. A stored
+		# height taller than the screen puts that pill below the fold of a
+		# sidebar that scrolls, and the palette can never be dragged back
+		# down — so every height the SDK reads passes through the ceiling.
+		ceiling = pysource.function(self.adapter, "_ceiling_height")
+		self.assertIsNotNone(
+			ceiling,
+			"the ceiling is a fixed constant again, which strands a palette "
+			"sized on a big display when it reopens on a small one",
+		)
 		self.assertLessEqual(
-			{"PALETTE_MIN_HEIGHT", "PALETTE_MAX_HEIGHT"},
-			pysource.referenced_names(settings),
+			{"PALETTE_MIN_HEIGHT", "PALETTE_MAX_HEIGHT",
+				"PALETTE_MAX_HEIGHT_FRACTION"},
+			pysource.referenced_names(ceiling),
+		)
+		self.assertIn(
+			"NSScreen.mainScreen",
+			pysource.called_names(ceiling),
+			"a ceiling that asks no screen is not relative to one",
+		)
+		for method in ("settings", "currentHeight"):
+			with self.subTest(method=method):
+				self.assertIn(
+					"_ceiling_height",
+					pysource.called_names(
+						pysource.function(self.adapter, method)
+					),
+					"%s sets a height the screen may not have room for"
+					% method,
+				)
+
+	def test_the_stored_height_is_clamped_and_not_rewritten(self):
+		# The stored value is the designer's intent: clamped on the way out,
+		# never edited on the way in, so the full height returns by itself
+		# when the big display does.
+		setter = pysource.function(self.adapter, "setCurrentHeight_")
+		self.assertNotIn(
+			"_ceiling_height",
+			pysource.called_names(setter),
+			"clamping on write loses the designer's height for good; "
+			"`mouseDragged:` has already clamped, and adds the section's "
+			"own chrome on top",
 		)
 
 	def test_the_adapter_redeclares_no_selector_the_sdk_already_declares(self):
@@ -228,6 +309,106 @@ class AdapterRules(unittest.TestCase):
 		self.assertNotIn(
 			"menuCallback", pysource.keyword_argument_names(self.adapter)
 		)
+
+	def test_selecting_a_page_pushes_its_text_into_the_edit_view(self):
+		selection = pysource.function(self.adapter, "treeSelectionChanged")
+		self.assertIsNotNone(selection)
+		self.assertIn(
+			"self._display_page",
+			pysource.called_names(selection),
+			"a selected proof-page that reaches no Edit view is a row that "
+			"does nothing at all",
+		)
+
+	def test_only_a_proof_page_is_ever_selected(self):
+		# A folder row toggles expansion and never becomes the selection, so
+		# the selection always names a real proof-page (spec §4).
+		selection = pysource.function(self.adapter, "treeSelectionChanged")
+		self.assertTrue(pysource.attribute_reads(selection, "row.is_dir"))
+		self.assertIn("tree.toggled", pysource.called_names(selection))
+
+	def test_the_header_is_stripped_by_the_core_not_the_adapter(self):
+		# ADR-0003's leniency is all string work, and ADR-0005 puts string
+		# work on the far side of the seam where it can be tested.
+		self.assertIn(
+			"frontmatter.read",
+			pysource.called_names(pysource.function(self.adapter, "_display_page")),
+		)
+
+	def test_a_tab_the_designer_opened_is_never_written_to(self):
+		# The whole rule, in one assertion: the only place a tab's `text` is
+		# assigned is the push, and the push reaches it only after matching
+		# the current tab against the one ProofBook opened.
+		push = pysource.function(self.adapter, "_push_text")
+		self.assertIsNotNone(push, "nothing pushes text into the Edit view")
+		# A tab is a local; every vanilla widget the palette writes to hangs
+		# off `self`, and the note pane (issue #21) will have a `text` of its
+		# own that this rule is not about.
+		def into_a_local(receiver):
+			return not receiver.startswith("self")
+
+		self.assertEqual(
+			pysource.attribute_assignment_lines(
+				self.adapter, "text", into_a_local
+			),
+			pysource.attribute_assignment_lines(push, "text", into_a_local),
+			"text is written into a tab outside the push, where nothing has "
+			"checked whose tab it is",
+		)
+		self.assertTrue(pysource.attribute_reads(push, "self.proofTab"))
+		self.assertIn(
+			"font.newTab",
+			pysource.called_names(push),
+			"a tab that is not ProofBook's own means a new tab, never a "
+			"write into the designer's",
+		)
+
+	def test_the_pushed_text_is_retained_alongside_the_tab(self):
+		# Both are needed by the refresh rules (spec §6): a re-push happens
+		# only while the tab still holds exactly what ProofBook put there.
+		push = pysource.function(self.adapter, "_push_text")
+		for attribute in ("proofTab", "pushedText"):
+			with self.subTest(attribute=attribute):
+				self.assertTrue(
+					pysource.attribute_assignment_lines(push, attribute),
+					"self.%s is never written, so a refresh cannot tell "
+					"ProofBook's text from the designer's" % attribute,
+				)
+
+	def test_the_edit_view_is_redrawn_the_cheap_way(self):
+		called = pysource.called_names(self.adapter)
+		self.assertTrue(
+			[name for name in called if name.endswith(".redraw")],
+			"the Edit view is not redrawn after a push",
+		)
+		self.assertEqual(
+			[name for name in called if name.endswith(".forceRedraw")],
+			[],
+			"forceRedraw redraws every open tab; spec §5 asks for redraw()",
+		)
+
+	def test_a_page_that_cannot_be_read_leaves_the_edit_view_alone(self):
+		# Spec §7: the message names the file, the ProofBook tab is left
+		# untouched, and the row stays selected.
+		display = pysource.function(self.adapter, "_display_page")
+		self.assertIn("self._alert", pysource.called_names(display))
+		handlers = [
+			handler
+			for node in ast.walk(display)
+			if isinstance(node, ast.Try)
+			for handler in node.handlers
+		]
+		self.assertTrue(
+			handlers, "an unreadable proof-page raises out of the callback"
+		)
+		for handler in handlers:
+			with self.subTest(handler=handler.lineno):
+				self.assertEqual(
+					pysource.called_names(handler).intersection(
+						{"self._push_text"}
+					),
+					set(),
+				)
 
 	def test_nothing_built_at_load_time_touches_the_filesystem(self):
 		for name in LOAD_TIME_METHODS:

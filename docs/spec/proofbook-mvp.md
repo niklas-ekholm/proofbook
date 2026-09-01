@@ -151,7 +151,7 @@ Above the tree: a thin **coverage bar** (done/wip proportions) with `N of M done
 
 Below the tree: a **collapsible note pane**, its collapsed state remembered. A thin footer toolbar carries a `+ New proof-page` button.
 
-**Palette height** is a fixed range, `minHeight` ~180 / `maxHeight` 1200, with the tree scrolling inside it. The maximum is measured rather than round: about as tall as the palette goes on a 1920x1243 display with the other panels collapsed. A proof-book large enough to matter runs well past what 400 could show, and on a large display that was scrolling through space the screen had spare. Height never tracks content. Collapsing the note pane changes what is visible, not the palette's height. Override the `ViewHeight` persistence key, which otherwise derives from the *localised* palette name.
+**Palette height** is a range with the tree scrolling inside it: `minHeight` ~180, and a `maxHeight` of 80% of the screen's visible height, capped at 1200. The cap is measured rather than round — about as tall as the palette goes on a 1920x1243 display with the other panels collapsed — but it is only a cap. The ceiling itself is relative, because the palette is resized solely by the pill along its foot: a height stored on a large display and reopened on a smaller one puts that pill below the fold of a sidebar that scrolls, where the only handle the palette has cannot be reached. The stored height is the designer's intent and is clamped when read, never rewritten, so reconnecting the display restores it. A proof-book large enough to matter runs well past what 400 could show, and on a large display that was scrolling through space the screen had spare. Height never tracks content. Collapsing the note pane changes what is visible, not the palette's height. Override the `ViewHeight` persistence key, which otherwise derives from the *localised* palette name.
 
 *(**Verified in Glyphs 4**: the tree browses a real proof-book — nesting, expansion, tooltips, ordering, membership — and the palette drags across its range with the height surviving a relaunch. Getting the drag working took four wrong attempts and two crashes; §10 has what it turned on. One residual Glyphs quirk: `mouseDragged:` stores the height with the section's chrome added while `setController:` restores it without, so a palette dragged to the very top comes back ~17pt short. Not worth compensating for — the correction would have to guess the same constant.)*
 
@@ -174,7 +174,13 @@ Neither empty state has a context menu.
 
 Selecting a proof-page strips the frontmatter and pushes the remaining text into the Edit view via `tab.text`.
 
-**The ProofBook tab**: if the current tab is one ProofBook opened, its text is replaced; otherwise a new tab is opened (`font.newTab(text)`). A tab the designer opened themselves is never written to. ProofBook holds a reference to the tab it opened **and the exact text it pushed there** — both are needed below. Use `tab.redraw()`, not `forceRedraw()`.
+**The ProofBook tab**: if the current tab is one ProofBook opened **and still holds exactly what ProofBook put there**, its text is replaced; otherwise a new tab is opened (`font.newTab(text)`). ProofBook holds a reference to the tab it opened **and the exact text it pushed there** — both are needed for that test and for the refresh in §6. Use `tab.redraw()`, not `forceRedraw()`.
+
+**A tab stops being ProofBook's the moment its text is the designer's.** A tab the designer opened is never written to, and neither is one ProofBook opened that has since been typed into — the designer who cleared a proof-page and wrote for an hour has forgotten where the tab came from, and losing that to a click on a row is the worst thing this plugin can do. It is the same test both times, so the two paths cannot disagree: **is the text still exactly what we pushed?** Text restored to exactly that — by an undo, say — matches again and is ProofBook's again; nothing can be lost by replacing text that is identical. The cost is one extra tab per typing episode, not one per click, because the tab that replaces it becomes the ProofBook tab in its turn.
+
+**What ProofBook remembers is what it reads back, not what it wrote.** The Edit view stores glyphs, not characters, so `tab.text` need not return the string assigned to it: an unencoded glyph comes back as `/name`, and a trailing newline may not survive. Re-read `tab.text` after the push and keep *that* as the token. A token that can never match disowns the tab on every selection, which is a new tab per click, silently.
+
+*(**Unverified**: whether `tab.text` round-trips a pushed string unchanged has not been measured. It is the first thing to check when building the refresh, and if it does not hold in some case the token has to be whatever comparison does — never an assumption that it matched.)*
 
 ---
 
@@ -190,7 +196,7 @@ State is per-palette-instance and in-memory: selection, expansion, scroll positi
 
 ### On refresh
 
-- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there.** If the designer has typed in that tab, the text is theirs; leave it.
+- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there** — the same test §5 makes before replacing a tab. If the designer has typed in that tab, the text is theirs; leave it, and stop treating the tab as ProofBook's.
 - **The selected page is gone**: clear the selection, empty the note pane, and **leave the Edit view tab exactly as it is.** Deleting a file should not blank a tab that may still be being read. An external rename reads as a delete plus an add; the MVP makes no attempt to track identity across a rename it did not perform.
 
 ### Note writes

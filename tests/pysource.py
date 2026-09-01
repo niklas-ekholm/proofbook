@@ -113,6 +113,14 @@ def function(tree, name):
 	return None
 
 
+def class_bases(tree, name):
+	"""The dotted base-class names of the class called `name`, or None."""
+	for node in ast.walk(tree):
+		if isinstance(node, ast.ClassDef) and node.name == name:
+			return {dotted_name(base) for base in node.bases}
+	return None
+
+
 def called_names(node):
 	"""Every dotted callee name under `node`, bare `open(...)` included."""
 	names = set()
@@ -143,6 +151,29 @@ def keyword_argument_names(node):
 	}
 
 
+def attribute_assignment_lines(node, attr, receiver=None):
+	"""Lines where an attribute called `attr` is assigned to: `x.attr = ...`.
+
+	`receiver` is an optional predicate over the dotted name being assigned
+	*into* — `"self.paletteView.group"` for `self.paletteView.group.text` —
+	which is what tells a write into a widget from a write into a local.
+	"""
+	lines = []
+	for child in ast.walk(node):
+		targets = []
+		if isinstance(child, ast.Assign):
+			targets = child.targets
+		elif isinstance(child, (ast.AugAssign, ast.AnnAssign)):
+			targets = [child.target]
+		for target in targets:
+			if not isinstance(target, ast.Attribute) or target.attr != attr:
+				continue
+			if receiver and not receiver(dotted_name(target.value) or ""):
+				continue
+			lines.append(child.lineno)
+	return lines
+
+
 def module_constant(tree, name):
 	"""The literal value assigned to a module-level `NAME = ...`, or None."""
 	for node in tree.body:
@@ -151,6 +182,17 @@ def module_constant(tree, name):
 		for target in node.targets:
 			if isinstance(target, ast.Name) and target.id == name:
 				return ast.literal_eval(node.value)
+	return None
+
+
+def assigned_value(tree, name):
+	"""The dotted name assigned to `name = ...` anywhere, or None."""
+	for node in ast.walk(tree):
+		if not isinstance(node, ast.Assign):
+			continue
+		for target in node.targets:
+			if isinstance(target, ast.Name) and target.id == name:
+				return dotted_name(node.value)
 	return None
 
 
