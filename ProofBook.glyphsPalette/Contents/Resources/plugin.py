@@ -156,7 +156,8 @@ ROW_MARGIN = PALETTE_MARGIN - SCROLL_BORDER
 # A proof-book worth browsing is long, the palette is the height of a sidebar
 # panel, and every point of row is a page further down the scroll — so the
 # rows are as close as the tallest thing in them, the owner pill, allows.
-ROW_HEIGHT = 20
+# 18 is that floor: the pill is 13, and what is left is the air around it.
+ROW_HEIGHT = 18
 ROW_INDENT = 11
 MARKER_WIDTH = 14
 SWATCH_DIAMETER = 9
