@@ -174,7 +174,13 @@ Neither empty state has a context menu.
 
 Selecting a proof-page strips the frontmatter and pushes the remaining text into the Edit view via `tab.text`.
 
-**The ProofBook tab**: if the current tab is one ProofBook opened, its text is replaced; otherwise a new tab is opened (`font.newTab(text)`). A tab the designer opened themselves is never written to. ProofBook holds a reference to the tab it opened **and the exact text it pushed there** — both are needed below. Use `tab.redraw()`, not `forceRedraw()`.
+**The ProofBook tab**: if the current tab is one ProofBook opened **and still holds exactly what ProofBook put there**, its text is replaced; otherwise a new tab is opened (`font.newTab(text)`). ProofBook holds a reference to the tab it opened **and the exact text it pushed there** — both are needed for that test and for the refresh in §6. Use `tab.redraw()`, not `forceRedraw()`.
+
+**A tab stops being ProofBook's the moment its text is the designer's.** A tab the designer opened is never written to, and neither is one ProofBook opened that has since been typed into — the designer who cleared a proof-page and wrote for an hour has forgotten where the tab came from, and losing that to a click on a row is the worst thing this plugin can do. It is the same test both times, so the two paths cannot disagree: **is the text still exactly what we pushed?** Text restored to exactly that — by an undo, say — matches again and is ProofBook's again; nothing can be lost by replacing text that is identical. The cost is one extra tab per typing episode, not one per click, because the tab that replaces it becomes the ProofBook tab in its turn.
+
+**What ProofBook remembers is what it reads back, not what it wrote.** The Edit view stores glyphs, not characters, so `tab.text` need not return the string assigned to it: an unencoded glyph comes back as `/name`, and a trailing newline may not survive. Re-read `tab.text` after the push and keep *that* as the token. A token that can never match disowns the tab on every selection, which is a new tab per click, silently.
+
+*(**Unverified**: whether `tab.text` round-trips a pushed string unchanged has not been measured. It is the first thing to check when building the refresh, and if it does not hold in some case the token has to be whatever comparison does — never an assumption that it matched.)*
 
 ---
 
@@ -190,7 +196,7 @@ State is per-palette-instance and in-memory: selection, expansion, scroll positi
 
 ### On refresh
 
-- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there.** If the designer has typed in that tab, the text is theirs; leave it.
+- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there** — the same test §5 makes before replacing a tab. If the designer has typed in that tab, the text is theirs; leave it, and stop treating the tab as ProofBook's.
 - **The selected page is gone**: clear the selection, empty the note pane, and **leave the Edit view tab exactly as it is.** Deleting a file should not blank a tab that may still be being read. An external rename reads as a delete plus an add; the MVP makes no attempt to track identity across a rename it did not perform.
 
 ### Note writes
