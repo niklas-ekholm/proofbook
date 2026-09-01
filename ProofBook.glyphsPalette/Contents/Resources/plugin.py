@@ -23,11 +23,22 @@ import sys
 
 import objc
 from AppKit import (
+	NSAttributedString,
+	NSBackgroundStyleEmphasized,
+	NSBezierPath,
+	NSColor,
 	NSEventPhaseBegan,
 	NSEventPhaseNone,
 	NSFont,
+	NSFontAttributeName,
+	NSFontWeightSemibold,
+	NSForegroundColorAttributeName,
+	NSGraphicsContext,
+	NSLineBreakByTruncatingTail,
 	NSMakeRect,
+	NSMutableParagraphStyle,
 	NSNotificationCenter,
+	NSParagraphStyleAttributeName,
 	NSScreen,
 	NSScrollView,
 	NSTextField,
@@ -55,7 +66,7 @@ if _BUNDLE_RESOURCES not in sys.path:
 	sys.path.append(_BUNDLE_RESOURCES)
 
 import proofbook  # noqa: E402  (only importable once sys.path is set, above)
-from proofbook import discovery, frontmatter, tree  # noqa: E402
+from proofbook import discovery, frontmatter, names, tree  # noqa: E402
 
 PROOFBOOK_FORCE_NO_VANILLA = False
 
@@ -114,13 +125,43 @@ VIEW_HEIGHT_KEY = "com.niklasekholm.ProofBookPalette.ViewHeight"
 # the wait is bounded rather than assumed.
 ATTACH_ATTEMPTS = 10
 
-# The tree is drawn as text (ADR-0002), so the indent is text too: one em
-# space per level, then a two-cell lead that keeps a page's subject aligned
-# under the subject of the folder holding it.
-INDENT = " "
-DISCLOSURE_EXPANDED = "▾ "
-DISCLOSURE_COLLAPSED = "▸ "
-PAGE_LEAD = "  "
+# Row geometry. The tree is a flat List2 with the indentation computed in
+# Python (ADR-0002), and now that a row draws a swatch and a pill the indent
+# is geometry rather than spaces: leading spaces cannot move a circle.
+#
+# The marker column holds either a folder's disclosure glyph or a page's
+# status swatch, so a page's subject sits under the subject of the folder
+# holding it, one indent step further in.
+ROW_MARGIN = 6
+ROW_INDENT = 11
+MARKER_WIDTH = 14
+SWATCH_DIAMETER = 9
+SUBJECT_FONT_SIZE = 11
+DISCLOSURE_FONT_SIZE = 9
+DISCLOSURE_EXPANDED = "▾"
+DISCLOSURE_COLLAPSED = "▸"
+
+# The owner pill: initials, in a capsule against the right edge. Sized from
+# the initials it holds rather than fixed, because `NE` and `MPCB` are both
+# legal owners (ADR-0001) and a fixed width would either clip one or leave
+# the other swimming.
+PILL_FONT_SIZE = 9
+PILL_PADDING = 4
+PILL_HEIGHT = 13
+# The gap the subject keeps from the pill, so a truncated subject reads as
+# truncated rather than as running into the initials.
+SUBJECT_GAP = 5
+
+# The coverage bar: a 4pt capsule above the tree, with `N of M done` beneath.
+# The palette's answer to the question the whole product exists for, in about
+# the height of one row.
+COVERAGE_MARGIN = 8
+COVERAGE_BAR_TOP = 7
+COVERAGE_BAR_HEIGHT = 4
+COVERAGE_CAPTION_TOP = 13
+COVERAGE_CAPTION_HEIGHT = 14
+# Where the tree starts, clear of both.
+TREE_TOP = COVERAGE_CAPTION_TOP + COVERAGE_CAPTION_HEIGHT + 2
 
 
 def _ceiling_height(window=None):
@@ -157,12 +198,274 @@ def _report_lines():
 	]
 
 
-def _row_text(row):
-	"""The one string a row draws: indentation, disclosure glyph, subject."""
-	lead = PAGE_LEAD
-	if row.is_dir:
-		lead = DISCLOSURE_EXPANDED if row.expanded else DISCLOSURE_COLLAPSED
-	return INDENT * row.depth + lead + row.subject
+# Drawing. Every colour is asked for at draw time and never cached: these are
+# semantic colours, and they answer differently in dark mode, in a window that
+# is not key, and inside a selected row. A colour read once at import is a
+# palette that stops matching the app around it.
+
+
+def _status_fill(status):
+	"""The swatch's fill, or None for the outline `TODO` draws.
+
+	An untagged page arrives here as `TODO` (ADR-0001) and is therefore drawn
+	exactly like an explicitly-tagged one, which is the point: the palette
+	must not show a distinction the filename grammar does not make.
+	"""
+	if status == names.DONE:
+		return NSColor.systemGreenColor()
+	if status == names.WIP:
+		return NSColor.systemOrangeColor()
+	return None
+
+
+def _label_color(emphasized):
+	if emphasized:
+		return NSColor.alternateSelectedControlTextColor()
+	return NSColor.labelColor()
+
+
+def _muted_color(emphasized):
+	"""Secondary ink, dimmed against whatever it is drawn on.
+
+	Inside a selected row the ground is the accent colour, where the system's
+	secondary label colour is close to unreadable; the selected-row text
+	colour at less than full opacity is what AppKit's own cells use there.
+	"""
+	if emphasized:
+		return NSColor.alternateSelectedControlTextColor().colorWithAlphaComponent_(0.7)
+	return NSColor.secondaryLabelColor()
+
+
+def _attributed(text, font, color, truncating=False):
+	attributes = {NSFontAttributeName: font, NSForegroundColorAttributeName: color}
+	if truncating:
+		paragraph = NSMutableParagraphStyle.alloc().init()
+		paragraph.setLineBreakMode_(NSLineBreakByTruncatingTail)
+		attributes[NSParagraphStyleAttributeName] = paragraph
+	return NSAttributedString.alloc().initWithString_attributes_(text, attributes)
+
+
+def _draw_centered(string, rect):
+	"""Draw an attributed string vertically centred in `rect`.
+
+	`drawInRect_` puts text at the top of the rect it is handed, and a row is
+	24pt tall around an 11pt font, so a subject drawn straight into the row's
+	bounds sits high enough to read as a bug.
+	"""
+	height = string.size().height
+	string.drawInRect_(
+		NSMakeRect(
+			rect.origin.x,
+			rect.origin.y + (rect.size.height - height) / 2.0,
+			rect.size.width,
+			height,
+		)
+	)
+
+
+def _capsule(rect):
+	radius = rect.size.height / 2.0
+	return NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+		rect, radius, radius
+	)
+
+
+class ProofBookRowView(NSView):
+	"""One tree row, drawn: status swatch, subject, owner pill (spec §4).
+
+	Drawn, not composed out of controls. A row is three things at fixed
+	positions with nothing to say to each other, and List2 reuses cell views
+	— so a stack of subviews would be torn down and rebuilt on every scroll
+	where a `drawRect_` reads one namedtuple.
+
+	The view holds no state but the row it was last handed, which is what
+	makes reuse safe: whatever it drew for row 3 is gone the moment it is
+	handed row 40, with nothing left over to leak between them.
+	"""
+
+	@objc.python_method
+	def setRow(self, row):
+		self.proofbookRow = row
+		self.setNeedsDisplay_(True)
+
+	def isFlipped(self):
+		# The table is flipped and so is every measurement below: y grows
+		# downward and a row's top edge is 0.
+		return True
+
+	@objc.python_method
+	def _emphasized(self):
+		"""Is this row being drawn on the selection's accent colour?
+
+		Asked of the enclosing `NSTableRowView`, the only object that knows:
+		the answer is no for a selected row in a window that is not key, and
+		the cell view itself is never told either way.
+		"""
+		view = self.superview()
+		while view is not None:
+			if view.respondsToSelector_("interiorBackgroundStyle"):
+				return view.interiorBackgroundStyle() == NSBackgroundStyleEmphasized
+			view = view.superview()
+		return False
+
+	def drawRect_(self, rect):
+		# `getattr`: AppKit draws a cell view once before List2 has handed it
+		# a row, and a palette that raised there would be a plugin lost to a
+		# traceback dialog on the first draw.
+		row = getattr(self, "proofbookRow", None)
+		if row is None:
+			return
+		bounds = self.bounds()
+		emphasized = self._emphasized()
+		left = ROW_MARGIN + row.depth * ROW_INDENT
+		marker = NSMakeRect(left, 0, MARKER_WIDTH, bounds.size.height)
+		if row.is_dir:
+			self._drawDisclosure(marker, row.expanded, emphasized)
+		else:
+			self._drawSwatch(marker, row.status, emphasized)
+		right = bounds.size.width - ROW_MARGIN
+		if row.owner:
+			pill = self._drawOwner(right, bounds, row.owner, emphasized)
+			right = pill.origin.x - SUBJECT_GAP
+		self._drawSubject(left + MARKER_WIDTH, right, bounds, row, emphasized)
+
+	@objc.python_method
+	def _drawDisclosure(self, marker, expanded, emphasized):
+		string = _attributed(
+			DISCLOSURE_EXPANDED if expanded else DISCLOSURE_COLLAPSED,
+			NSFont.systemFontOfSize_(DISCLOSURE_FONT_SIZE),
+			_muted_color(emphasized),
+		)
+		width = string.size().width
+		_draw_centered(
+			string,
+			NSMakeRect(
+				marker.origin.x + (marker.size.width - width) / 2.0,
+				marker.origin.y,
+				width,
+				marker.size.height,
+			),
+		)
+
+	@objc.python_method
+	def _drawSwatch(self, marker, status, emphasized):
+		"""`TODO` an empty outline, `WIP` amber, `DONE` green (spec §4)."""
+		box = NSMakeRect(
+			marker.origin.x + (marker.size.width - SWATCH_DIAMETER) / 2.0,
+			(marker.size.height - SWATCH_DIAMETER) / 2.0,
+			SWATCH_DIAMETER,
+			SWATCH_DIAMETER,
+		)
+		fill = _status_fill(status)
+		if fill is not None:
+			fill.set()
+			NSBezierPath.bezierPathWithOvalInRect_(box).fill()
+			return
+		# A stroke straddles its own path, so the outline is inset by half a
+		# line width — otherwise it draws a hair wider than the filled circle
+		# above it, which is visible the moment a TODO row sits above a DONE.
+		outline = NSBezierPath.bezierPathWithOvalInRect_(
+			NSMakeRect(
+				box.origin.x + 0.5,
+				box.origin.y + 0.5,
+				box.size.width - 1,
+				box.size.height - 1,
+			)
+		)
+		outline.setLineWidth_(1.0)
+		_muted_color(emphasized).set()
+		outline.stroke()
+
+	@objc.python_method
+	def _drawOwner(self, right, bounds, owner, emphasized):
+		"""The initials pill, hugging the right edge. Returns its rect."""
+		string = _attributed(
+			owner,
+			NSFont.systemFontOfSize_weight_(PILL_FONT_SIZE, NSFontWeightSemibold),
+			_muted_color(emphasized),
+		)
+		width = string.size().width + PILL_PADDING * 2
+		pill = NSMakeRect(
+			right - width,
+			(bounds.size.height - PILL_HEIGHT) / 2.0,
+			width,
+			PILL_HEIGHT,
+		)
+		if emphasized:
+			ground = NSColor.alternateSelectedControlTextColor()
+			ground = ground.colorWithAlphaComponent_(0.2)
+		else:
+			ground = NSColor.quaternaryLabelColor()
+		ground.set()
+		_capsule(pill).fill()
+		_draw_centered(
+			string,
+			NSMakeRect(
+				pill.origin.x + PILL_PADDING,
+				pill.origin.y,
+				pill.size.width - PILL_PADDING * 2,
+				pill.size.height,
+			),
+		)
+		return pill
+
+	@objc.python_method
+	def _drawSubject(self, left, right, bounds, row, emphasized):
+		"""The subject — hyphens already spaces, courtesy of the core.
+
+		Truncating, not clipping: the palette is narrow by nature, and a
+		subject that has run out of room should say so. The raw filename is a
+		tooltip away either way (spec §4).
+		"""
+		width = right - left
+		if width <= 0:
+			return
+		_draw_centered(
+			_attributed(
+				row.subject,
+				NSFont.systemFontOfSize_(SUBJECT_FONT_SIZE),
+				_label_color(emphasized),
+				truncating=True,
+			),
+			NSMakeRect(left, 0, width, bounds.size.height),
+		)
+
+
+class ProofBookCoverageBarView(NSView):
+	"""Done and wip as proportions of the whole proof-book (spec §4).
+
+	Deliberately not a `LevelIndicator` or a progress bar: this is two
+	proportions in one track, and both stock controls draw a single value
+	inside chrome of their own that a 4pt strip has no room for.
+	"""
+
+	@objc.python_method
+	def setCoverage(self, count):
+		self.proofbookCoverage = count
+		self.setNeedsDisplay_(True)
+
+	def isFlipped(self):
+		return True
+
+	def drawRect_(self, rect):
+		count = getattr(self, "proofbookCoverage", None)
+		bounds = self.bounds()
+		track = _capsule(bounds)
+		NSColor.quaternaryLabelColor().set()
+		track.fill()
+		if count is None or not count.total:
+			return
+		# Clipped to the capsule, so the segments take its rounded ends
+		# instead of squaring off the left of the bar.
+		NSGraphicsContext.saveGraphicsState()
+		track.addClip()
+		done = bounds.size.width * count.done_fraction
+		wip = bounds.size.width * count.wip_fraction
+		NSColor.systemGreenColor().set()
+		NSBezierPath.fillRect_(NSMakeRect(0, 0, done, bounds.size.height))
+		NSColor.systemOrangeColor().set()
+		NSBezierPath.fillRect_(NSMakeRect(done, 0, wip, bounds.size.height))
+		NSGraphicsContext.restoreGraphicsState()
 
 
 # Scroll chaining. Glyphs' palette sidebar scrolls, and ProofBook sits in
@@ -250,23 +553,47 @@ if vanilla is not None:
 
 		nsScrollViewClass = ProofBookScrollView
 
-	class ProofBookRowCell(vanilla.EditTextList2Cell):
-		"""A tree row: the drawn text, and the raw filename as its tooltip.
+	class ProofBookRowCell(vanilla.Group):
+		"""A tree row: swatch, subject, owner pill, and the filename tooltip.
+
+		A List2 cell class is any vanilla wrapper with a `set`, so this is a
+		Group over the view that draws itself — `nsViewClass` is vanilla's own
+		seam for exactly this, the same one `ProofBookTree` uses for the
+		scroll view.
 
 		The tooltip is the *only* place a filename appears in the palette —
 		transparency on demand, not on screen (spec §4). List2 reuses cell
-		views, so the tooltip is set on every `set`, never once at build time.
+		views, so both it and the row are set on every `set`, never once at
+		build time.
 		"""
 
+		nsViewClass = ProofBookRowView
+
+		def __init__(self, editable=False):
+			# List2 injects `editable` into every cell class's arguments, so
+			# it has to be accepted; a drawn row has nothing to edit, and
+			# renaming is a dialog rather than an inline cell (spec §8).
+			super().__init__((0, 0, 0, 0))
+
 		def set(self, row):
-			self.editText.set(_row_text(row))
-			# Both: the text field covers the container and wins the hit test.
+			self._nsObject.setRow(row)
 			self._nsObject.setToolTip_(row.filename)
-			self.getNSTextField().setToolTip_(row.filename)
+
+		def get(self):
+			return getattr(self._nsObject, "proofbookRow", None)
+
+	class ProofBookCoverageBar(vanilla.Group):
+		"""The coverage bar, wrapped for the palette to place and hide."""
+
+		nsViewClass = ProofBookCoverageBarView
+
+		def set(self, count):
+			self._nsObject.setCoverage(count)
 
 else:
 	ProofBookTree = None
 	ProofBookRowCell = None
+	ProofBookCoverageBar = None
 
 
 class ProofBookPalette(PalettePlugin):
@@ -373,11 +700,29 @@ class ProofBookPalette(PalettePlugin):
 			callback=self.createProofBook,
 		)
 		group.createButton.show(False)
-		# One column, one cell class: the swatch, the owner pill and the
-		# coverage bar are issue #17. Sorting is off because the core already
-		# ordered the rows, and a header would only offer to undo that.
+		# The coverage bar sits above the tree and answers for the whole
+		# proof-book, not the visible part of it — which is why it is fed
+		# from the listing rather than the rows.
+		group.coverage = ProofBookCoverageBar(
+			(COVERAGE_MARGIN, COVERAGE_BAR_TOP, -COVERAGE_MARGIN, COVERAGE_BAR_HEIGHT)
+		)
+		group.coverage.show(False)
+		group.coverageCaption = vanilla.TextBox(
+			(
+				COVERAGE_MARGIN,
+				COVERAGE_CAPTION_TOP,
+				-COVERAGE_MARGIN,
+				COVERAGE_CAPTION_HEIGHT,
+			),
+			"",
+			sizeStyle="small",
+		)
+		group.coverageCaption.show(False)
+		# One column, one cell class: the row draws its own swatch, subject
+		# and owner pill. Sorting is off because the core already ordered the
+		# rows, and a header would only offer to undo that.
 		group.tree = ProofBookTree(
-			(0, 0, 0, 0),
+			(0, TREE_TOP, 0, 0),
 			items=[],
 			columnDescriptions=[
 				dict(identifier="row", cellClass=ProofBookRowCell)
@@ -678,8 +1023,12 @@ class ProofBookPalette(PalettePlugin):
 			group.tree.show(True)
 			self._draw_tree()
 			return
-		# Neither empty state has a tree, and neither has a context menu.
+		# Neither empty state has a tree, a coverage bar or a context menu:
+		# an empty state is where the title and explanation are drawn, and
+		# they occupy the same strip the coverage does.
 		group.tree.show(False)
+		group.coverage.show(False)
+		group.coverageCaption.show(False)
 		self.rows = []
 		group.title.set(state.title)
 		group.title.show(True)
@@ -701,6 +1050,7 @@ class ProofBookPalette(PalettePlugin):
 		"""
 		group = self.paletteView.group
 		self.rows = tree.flatten(self.entries, self.expanded)
+		self._draw_coverage()
 		selected = [
 			index
 			for index, row in enumerate(self.rows)
@@ -712,6 +1062,27 @@ class ProofBookPalette(PalettePlugin):
 			group.tree.setSelectedIndexes(selected)
 		finally:
 			self.settingSelection = False
+
+	@objc.python_method
+	def _draw_coverage(self):
+		"""The bar and its `N of M done`, or nothing at all.
+
+		Counted over the listing, so a folder nobody has expanded counts too.
+		A proof-book with no pages in it draws neither: the core answers with
+		no caption, and a bar reporting on nothing would take height from the
+		rows that are the actual answer — a folder tree waiting for a page.
+		"""
+		group = self.paletteView.group
+		count = tree.coverage(self.entries)
+		caption = tree.coverage_caption(count)
+		if caption is None:
+			group.coverage.show(False)
+			group.coverageCaption.show(False)
+			return
+		group.coverage.set(count)
+		group.coverageCaption.set(caption)
+		group.coverage.show(True)
+		group.coverageCaption.show(True)
 
 	@objc.python_method
 	def _alert(self, message):

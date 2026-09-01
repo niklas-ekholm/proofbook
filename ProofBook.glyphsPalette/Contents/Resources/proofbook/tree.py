@@ -8,6 +8,10 @@ plain set of folder paths, so toggling one is re-flattening the list.
 
 Paths are relative to the proof-book root and separated by `/` — the adapter
 joins them back onto the root before it touches anything.
+
+The coverage count lives here too. It is the same listing asked a different
+question — how much of this proof-book is done — and it is deliberately not
+asked of the rows: coverage is about the whole book, not the visible part.
 """
 
 from collections import namedtuple
@@ -25,6 +29,11 @@ Entry = namedtuple("Entry", "path is_dir")
 #: sets of these. `filename` is the raw name, and is the tooltip: the only
 #: place in the palette a filename appears. `expanded` is None for a page.
 Row = namedtuple("Row", "path depth is_dir filename subject status owner expanded")
+
+#: The coverage answer in four counts, plus the two proportions the bar draws.
+#: `todo` carries the untagged pages too — they render as `TODO` and count as
+#: it, because a page nobody has tagged is a page nobody has started.
+Coverage = namedtuple("Coverage", "done wip todo total done_fraction wip_fraction")
 
 
 def flatten(entries, expanded=()):
@@ -116,3 +125,47 @@ def _emit(children, prefix, depth, expanded, rows):
 					None,
 				)
 			)
+
+
+def coverage(entries):
+	"""The proof-book's coverage, counted over the whole listing.
+
+	Recursive and expansion-blind by construction: this is asked of the
+	listing, not the rows, so a folder nobody has opened counts exactly as
+	much as one in front of the designer. Coverage is the question the whole
+	product exists for, and it is not a question about what is on screen.
+
+	The two fractions are computed here rather than in the adapter because a
+	proof-book with no pages is the case that divides by zero, and deciding it
+	once, on the side of the seam a test can reach, is cheaper than trusting
+	the drawing code to remember.
+	"""
+	counts = {status: 0 for status in names.STATUSES}
+	for entry in entries:
+		if entry.is_dir:
+			continue
+		name = entry.path.split(PATH_SEPARATOR)[-1]
+		if not names.is_proof_page(name):
+			continue
+		# An untagged page counts as TODO, exactly as it renders (ADR-0001).
+		counts[names.parse(name).status] += 1
+	total = sum(counts.values())
+	return Coverage(
+		counts[names.DONE],
+		counts[names.WIP],
+		counts[names.TODO],
+		total,
+		counts[names.DONE] / total if total else 0.0,
+		counts[names.WIP] / total if total else 0.0,
+	)
+
+
+def coverage_caption(count):
+	"""`3 of 12 done` — or None, which means draw no coverage at all.
+
+	An empty proof-book is answered by the empty tree beneath it; `0 of 0
+	done` would be a bar reporting on nothing, taking height from the rows.
+	"""
+	if not count.total:
+		return None
+	return "%d of %d done" % (count.done, count.total)

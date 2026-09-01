@@ -310,6 +310,95 @@ class AdapterRules(unittest.TestCase):
 			"menuCallback", pysource.keyword_argument_names(self.adapter)
 		)
 
+	def test_a_row_draws_itself_rather_than_stacking_up_controls(self):
+		# List2 reuses cell views, so a row built out of subviews would be
+		# torn down and rebuilt on every scroll. A drawn row reads one
+		# namedtuple, and it is the only way to place a swatch and a pill at
+		# all: leading spaces cannot move a circle.
+		self.assertEqual(
+			{"vanilla.Group"},
+			pysource.class_bases(self.adapter, "ProofBookRowCell"),
+		)
+		self.assertEqual(
+			{"NSView"}, pysource.class_bases(self.adapter, "ProofBookRowView")
+		)
+		self.assertEqual(
+			"ProofBookRowView",
+			pysource.assigned_value(self.adapter, "nsViewClass"),
+			"vanilla's own seam again: a cell class that does not set it "
+			"gets a plain NSView and draws nothing",
+		)
+		# Every `set` in the adapter, because the coverage bar has one too:
+		# one of them has to be the cell handing the view its row.
+		setters = [
+			node
+			for node in ast.walk(self.adapter)
+			if isinstance(node, ast.FunctionDef) and node.name == "set"
+		]
+		self.assertTrue(
+			any(
+				"self._nsObject.setRow" in pysource.called_names(node)
+				for node in setters
+			),
+			"a reused cell view that is not handed its row draws the row it "
+			"held before, which is a row from somewhere else in the tree",
+		)
+
+	def test_an_untagged_page_cannot_be_drawn_differently_from_a_todo(self):
+		# ADR-0001: an untagged page *is* TODO, and the palette must not
+		# invent a distinction the filename grammar does not make. The
+		# swatch's fill is chosen by naming the two statuses that have one,
+		# so there is no branch a third rendering could be added to.
+		fill = pysource.function(self.adapter, "_status_fill")
+		self.assertIsNotNone(fill)
+		self.assertTrue(pysource.attribute_reads(fill, "names.DONE"))
+		self.assertTrue(pysource.attribute_reads(fill, "names.WIP"))
+		self.assertEqual(
+			pysource.attribute_reads(fill, "names.TODO"),
+			[],
+			"TODO is the fall-through — naming it is the first half of "
+			"drawing it differently from an untagged page",
+		)
+
+	def test_the_coverage_count_is_asked_of_the_listing_not_the_rows(self):
+		# Coverage is about the whole proof-book (spec §4), so it is counted
+		# over the listing. Counting the rows instead would make it answer
+		# for whatever happens to be expanded — a number that changes when a
+		# designer opens a folder, which is not a coverage question at all.
+		draw = pysource.function(self.adapter, "_draw_coverage")
+		self.assertIsNotNone(draw, "nothing draws the coverage bar")
+		self.assertTrue(pysource.attribute_reads(draw, "self.entries"))
+		self.assertEqual(
+			pysource.attribute_reads(draw, "self.rows"),
+			[],
+			"the rows are the visible part of the book; coverage is not "
+			"about the visible part",
+		)
+		called = pysource.called_names(draw)
+		self.assertIn("tree.coverage", called)
+		self.assertIn(
+			"tree.coverage_caption",
+			called,
+			"`N of M done` is the core's sentence to write, including its "
+			"decision that a proof-book with no pages has none",
+		)
+
+	def test_no_colour_is_read_once_and_kept(self):
+		# Semantic colours answer differently in dark mode, in a window that
+		# is not key, and inside a selected row. One read at import time is a
+		# palette that stops matching the app around it — and module scope is
+		# where that mistake gets made, because it looks like a constant.
+		for node in self.adapter.body:
+			if not isinstance(node, ast.Assign):
+				continue
+			for call in pysource.called_names(node):
+				with self.subTest(call=call):
+					self.assertFalse(
+						call.startswith("NSColor."),
+						"%s is read once at import; ask for it in drawRect_"
+						% call,
+					)
+
 	def test_selecting_a_page_pushes_its_text_into_the_edit_view(self):
 		selection = pysource.function(self.adapter, "treeSelectionChanged")
 		self.assertIsNotNone(selection)
