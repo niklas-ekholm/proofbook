@@ -142,9 +142,53 @@ class AdapterRules(unittest.TestCase):
 					"settings no longer sets %s, so `init` fills it from the "
 					"view's frame and the palette has no range" % attribute,
 				)
+		# The minimum is a constant and is named here; the maximum is not,
+		# because it depends on the screen (see below).
+		self.assertIn("PALETTE_MIN_HEIGHT", pysource.referenced_names(settings))
+
+	def test_the_palette_height_ceiling_is_relative_to_the_screen(self):
+		# The palette is resized only by the pill along its foot. A stored
+		# height taller than the screen puts that pill below the fold of a
+		# sidebar that scrolls, and the palette can never be dragged back
+		# down — so every height the SDK reads passes through the ceiling.
+		ceiling = pysource.function(self.adapter, "_ceiling_height")
+		self.assertIsNotNone(
+			ceiling,
+			"the ceiling is a fixed constant again, which strands a palette "
+			"sized on a big display when it reopens on a small one",
+		)
 		self.assertLessEqual(
-			{"PALETTE_MIN_HEIGHT", "PALETTE_MAX_HEIGHT"},
-			pysource.referenced_names(settings),
+			{"PALETTE_MIN_HEIGHT", "PALETTE_MAX_HEIGHT",
+				"PALETTE_MAX_HEIGHT_FRACTION"},
+			pysource.referenced_names(ceiling),
+		)
+		self.assertIn(
+			"NSScreen.mainScreen",
+			pysource.called_names(ceiling),
+			"a ceiling that asks no screen is not relative to one",
+		)
+		for method in ("settings", "currentHeight"):
+			with self.subTest(method=method):
+				self.assertIn(
+					"_ceiling_height",
+					pysource.called_names(
+						pysource.function(self.adapter, method)
+					),
+					"%s sets a height the screen may not have room for"
+					% method,
+				)
+
+	def test_the_stored_height_is_clamped_and_not_rewritten(self):
+		# The stored value is the designer's intent: clamped on the way out,
+		# never edited on the way in, so the full height returns by itself
+		# when the big display does.
+		setter = pysource.function(self.adapter, "setCurrentHeight_")
+		self.assertNotIn(
+			"_ceiling_height",
+			pysource.called_names(setter),
+			"clamping on write loses the designer's height for good; "
+			"`mouseDragged:` has already clamped, and adds the section's "
+			"own chrome on top",
 		)
 
 	def test_the_adapter_redeclares_no_selector_the_sdk_already_declares(self):
