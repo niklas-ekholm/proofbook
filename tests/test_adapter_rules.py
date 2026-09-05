@@ -51,6 +51,27 @@ LOAD_TIME_METHODS = [
 	"start",
 ]
 
+# The two functions that write into an Edit view tab: a selection (spec §5)
+# and a become-key refresh (spec §6). Both must reach the core's ownership
+# question first, and nothing else may assign a tab's text at all.
+TAB_WRITERS = ["_push_text", "_refresh_page"]
+
+# The core's answers about the tab. All three are the same comparison.
+EDIT_DECISIONS = {"edit.destination", "edit.refresh", "edit.is_proofbook_tab"}
+
+# Everything the palette remembers about one window. In memory and per
+# instance: selection, expansion and the displayed page belong to the window
+# they were made in and to no other (spec §6).
+PER_WINDOW_STATE = {
+	"bookPath",
+	"entries",
+	"rows",
+	"expanded",
+	"selectedPath",
+	"proofTab",
+	"pushed",
+}
+
 # The palette's height range, set where the SDK reads it from.
 HEIGHT_BOUNDS = [
 	("self.min", "PALETTE_MIN_HEIGHT"),
@@ -451,15 +472,20 @@ class AdapterRules(unittest.TestCase):
 		# work on the far side of the seam where it can be tested.
 		self.assertIn(
 			"frontmatter.read",
-			pysource.called_names(pysource.function(self.adapter, "_display_page")),
+			pysource.called_names(pysource.function(self.adapter, "_read_page")),
 		)
 
-	def test_a_tab_the_designer_opened_is_never_written_to(self):
-		# The whole rule, in one assertion: the only place a tab's `text` is
-		# assigned is the push, and the push reaches it only after matching
-		# the current tab against the one ProofBook opened.
-		push = pysource.function(self.adapter, "_push_text")
-		self.assertIsNotNone(push, "nothing pushes text into the Edit view")
+	def test_no_tab_is_written_to_without_asking_the_core_whose_it_is(self):
+		# The whole rule, in one assertion. A tab the designer opened is
+		# theirs, and so is one ProofBook opened that they have since typed
+		# into — so every write into a tab must be downstream of the core's
+		# ownership question, and there are exactly two writers of it.
+		writers = {}
+		for name in TAB_WRITERS:
+			function = pysource.function(self.adapter, name)
+			self.assertIsNotNone(function, "%s is gone" % name)
+			writers[name] = function
+
 		# A tab is a local; every vanilla widget the palette writes to hangs
 		# off `self`, and the note pane (issue #21) will have a `text` of its
 		# own that this rule is not about.
@@ -467,32 +493,65 @@ class AdapterRules(unittest.TestCase):
 			return not receiver.startswith("self")
 
 		self.assertEqual(
-			pysource.attribute_assignment_lines(
-				self.adapter, "text", into_a_local
+			sorted(
+				pysource.attribute_assignment_lines(
+					self.adapter, "text", into_a_local
+				)
 			),
-			pysource.attribute_assignment_lines(push, "text", into_a_local),
-			"text is written into a tab outside the push, where nothing has "
-			"checked whose tab it is",
+			sorted(
+				line
+				for function in writers.values()
+				for line in pysource.attribute_assignment_lines(
+					function, "text", into_a_local
+				)
+			),
+			"text is written into a tab somewhere that has not asked whose "
+			"tab it is",
 		)
-		self.assertTrue(pysource.attribute_reads(push, "self.proofTab"))
+		for name, function in writers.items():
+			with self.subTest(writer=name):
+				self.assertTrue(
+					pysource.called_names(function).intersection(EDIT_DECISIONS),
+					"%s decides for itself whether the tab is ProofBook's; "
+					"spec §5 asks for one comparison, not two" % name,
+				)
+
+	def test_only_the_selection_path_may_open_a_tab(self):
+		# A refresh is a window switch, not a request: it re-pushes into the
+		# tab ProofBook opened or does nothing at all (spec §6).
 		self.assertIn(
 			"font.newTab",
-			pysource.called_names(push),
+			pysource.called_names(pysource.function(self.adapter, "_push_text")),
 			"a tab that is not ProofBook's own means a new tab, never a "
 			"write into the designer's",
 		)
+		self.assertNotIn(
+			"font.newTab",
+			pysource.called_names(pysource.function(self.adapter, "_refresh_page")),
+			"a refresh that opens a tab puts a proof-page in front of a "
+			"designer who is not even in Glyphs",
+		)
 
-	def test_the_pushed_text_is_retained_alongside_the_tab(self):
-		# Both are needed by the refresh rules (spec §6): a re-push happens
-		# only while the tab still holds exactly what ProofBook put there.
-		push = pysource.function(self.adapter, "_push_text")
-		for attribute in ("proofTab", "pushedText"):
+	def test_what_is_remembered_is_what_the_tab_read_back(self):
+		# The Edit view stores glyphs, not characters, so `tab.text` need not
+		# return the string assigned to it. Remembering the written string
+		# would fail the ownership test on a tab nothing had touched, which is
+		# a new tab per click, silently (spec §5).
+		remember = pysource.function(self.adapter, "_remember")
+		self.assertIsNotNone(remember, "nothing retains the pushed text")
+		for attribute in ("proofTab", "pushed"):
 			with self.subTest(attribute=attribute):
 				self.assertTrue(
-					pysource.attribute_assignment_lines(push, attribute),
+					pysource.attribute_assignment_lines(remember, attribute),
 					"self.%s is never written, so a refresh cannot tell "
 					"ProofBook's text from the designer's" % attribute,
 				)
+		self.assertIn(
+			"self._tab_text",
+			pysource.called_names(remember),
+			"the token kept is the string that was written, not the one the "
+			"tab gave back",
+		)
 
 	def test_the_edit_view_is_redrawn_the_cheap_way(self):
 		called = pysource.called_names(self.adapter)
@@ -509,11 +568,10 @@ class AdapterRules(unittest.TestCase):
 	def test_a_page_that_cannot_be_read_leaves_the_edit_view_alone(self):
 		# Spec §7: the message names the file, the ProofBook tab is left
 		# untouched, and the row stays selected.
-		display = pysource.function(self.adapter, "_display_page")
-		self.assertIn("self._alert", pysource.called_names(display))
+		read = pysource.function(self.adapter, "_read_page")
 		handlers = [
 			handler
-			for node in ast.walk(display)
+			for node in ast.walk(read)
 			if isinstance(node, ast.Try)
 			for handler in node.handlers
 		]
@@ -523,11 +581,149 @@ class AdapterRules(unittest.TestCase):
 		for handler in handlers:
 			with self.subTest(handler=handler.lineno):
 				self.assertEqual(
-					pysource.called_names(handler).intersection(
-						{"self._push_text"}
-					),
+					pysource.called_names(handler).intersection(TAB_WRITERS),
 					set(),
 				)
+		# The complaint is the selection path's, and so is the guard: a read
+		# that came back with nothing must not reach a tab.
+		display = pysource.function(self.adapter, "_display_page")
+		self.assertIn("self._alert", pysource.called_names(display))
+		self.assertTrue(
+			[
+				node
+				for node in ast.walk(display)
+				if isinstance(node, ast.If)
+				and pysource.called_names(node).intersection(TAB_WRITERS) == set()
+			],
+			"nothing guards the push against a page that did not read",
+		)
+
+	# -- Refresh (issue #20) ----------------------------------------------
+
+	def test_becoming_key_re_reads_the_proof_book(self):
+		# The designer leaves Glyphs to pull, rename in Finder or edit in a
+		# text editor, and coming back *is* the trigger (spec §6).
+		became_key = pysource.function(self.adapter, "windowBecameKey_")
+		self.assertIsNotNone(became_key, "nothing observes become-key")
+		self.assertIn("self._resolve", pysource.called_names(became_key))
+		resolve = pysource.function(self.adapter, "_resolve")
+		self.assertIn(
+			"self._listing",
+			pysource.called_names(resolve),
+			"a resolve that does not re-walk the folder leaves a file added "
+			"in Finder invisible until the window is reopened",
+		)
+
+	def test_the_refresh_rides_become_key_and_nothing_else(self):
+		# No FSEvents watcher, no polling timer, and above all nothing on
+		# UPDATEINTERFACE, which fires on every redraw: a stat per redraw is
+		# how a palette makes a font feel broken.
+		referenced = pysource.referenced_names(self.adapter)
+		called = pysource.called_names(self.adapter)
+		for name in ("UPDATEINTERFACE", "NSTimer", "FSEventStreamCreate"):
+			with self.subTest(name=name):
+				self.assertNotIn(name, referenced)
+		self.assertEqual(
+			[name for name in called if "scheduledTimer" in name],
+			[],
+			"a polling timer re-reads the folder the designer is not looking "
+			"at; spec §6 asks for become-key and nothing else",
+		)
+
+	def test_a_refresh_re_reads_the_page_without_complaining(self):
+		# A selection is a question the designer just asked and deserves an
+		# answer. A refresh is a window switch: a proof-book on a volume that
+		# is not mounted must not raise an alert every time they come back.
+		refresh = pysource.function(self.adapter, "_refresh_page")
+		self.assertIsNotNone(refresh, "nothing re-pushes a changed page")
+		self.assertIn("self._read_page", pysource.called_names(refresh))
+		self.assertNotIn("self._alert", pysource.called_names(refresh))
+		self.assertIn(
+			"self._alert",
+			pysource.called_names(pysource.function(self.adapter, "_display_page")),
+			"a page the designer just clicked that cannot be read says so",
+		)
+		self.assertNotIn(
+			"self._alert",
+			pysource.called_names(pysource.function(self.adapter, "_read_page")),
+			"the read decides who is owed an answer, so both callers get the "
+			"same one",
+		)
+
+	def test_a_refresh_asks_whose_tab_it_is_before_it_touches_the_disk(self):
+		# ADR-0004. This runs on every become-key *and* after every rename, and
+		# the read is the unrouted main-thread one: a tab the designer has
+		# typed into is left alone whatever the file says, so paying a
+		# placeholder download to be told so would put a cloud round trip
+		# behind a window switch, and behind tagging a page.
+		refresh = pysource.function(self.adapter, "_refresh_page")
+		asked = [
+			node.lineno
+			for node in ast.walk(refresh)
+			if isinstance(node, ast.Call)
+			and pysource.dotted_name(node.func) == "edit.is_proofbook_tab"
+		]
+		read = [
+			node.lineno
+			for node in ast.walk(refresh)
+			if isinstance(node, ast.Call)
+			and pysource.dotted_name(node.func) == "self._read_page"
+		]
+		self.assertTrue(asked, "the refresh reads the file before asking")
+		self.assertTrue(read)
+		self.assertLess(
+			max(asked),
+			min(read),
+			"the file is read before the tab has been ruled out, which is a "
+			"download a window switch did not need",
+		)
+
+	def test_a_vanished_selection_is_dropped_and_the_edit_view_is_not(self):
+		# Deleting a file must not blank a tab that may still be being read,
+		# so the selection is asked of the listing and the Edit view is left
+		# to the core's refresh answer (spec §6).
+		resolve = pysource.function(self.adapter, "_resolve")
+		called = pysource.called_names(resolve)
+		self.assertIn("tree.selection_after", called)
+		self.assertIn("self._refresh_page", called)
+
+	def test_the_tab_is_asked_of_the_font_rather_than_trusted(self):
+		# A tab the designer closed leaves `self.proofTab` holding a
+		# controller whose window has gone, and reading `text` off that is not
+		# a question worth asking.
+		tab = pysource.function(self.adapter, "_proofbook_tab")
+		self.assertIsNotNone(tab, "the remembered tab is never re-checked")
+		self.assertTrue(pysource.attribute_reads(tab, "self.proofTab"))
+		self.assertTrue(
+			pysource.attribute_reads(tab, "font.tabs"),
+			"the font's open tabs are never consulted, so a tab the designer "
+			"closed is still treated as the ProofBook tab",
+		)
+
+	def test_per_window_state_lives_on_the_instance_and_nowhere_else(self):
+		# One palette instance per document window (spec §6): nothing is
+		# shared across windows, and nothing survives a window close.
+		settings = pysource.function(self.adapter, "settings")
+		initialised = {
+			target.attr
+			for node in ast.walk(settings)
+			if isinstance(node, ast.Assign)
+			for target in node.targets
+			if isinstance(target, ast.Attribute)
+		}
+		for attribute in PER_WINDOW_STATE:
+			with self.subTest(attribute=attribute):
+				self.assertIn(
+					attribute,
+					initialised,
+					"self.%s is not reset per palette, so it is carried in "
+					"from whatever the last window left behind" % attribute,
+				)
+		self.assertEqual(
+			PER_WINDOW_STATE.intersection(pysource.class_attributes(self.adapter)),
+			set(),
+			"a class attribute is one object shared by every window",
+		)
 
 	# -- Tagging (issue #19) ----------------------------------------------
 
