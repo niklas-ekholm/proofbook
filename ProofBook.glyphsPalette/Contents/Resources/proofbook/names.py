@@ -43,6 +43,19 @@ OWNER_MAX_LETTERS = 4
 Name = namedtuple("Name", "subject status owner tagged")
 
 
+def next_status(status):
+	"""The status the swatch writes next: `TODO` -> `WIP` -> `DONE` -> `TODO`.
+
+	The cycle is the whole of the swatch's behaviour, and it wraps: a misclick
+	is undone by another click or two around it rather than by a dialog. It
+	cannot jump `DONE` -> `TODO`, which is why the context menu offers the
+	three statuses directly (spec §8).
+	"""
+	if status.upper() not in STATUSES:
+		raise ValueError("not a status: %r" % (status,))
+	return STATUSES[(STATUSES.index(status.upper()) + 1) % len(STATUSES)]
+
+
 def is_proof_page(filename):
 	"""Is this filename a proof-page?
 
