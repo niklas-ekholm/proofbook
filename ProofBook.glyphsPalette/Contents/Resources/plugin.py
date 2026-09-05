@@ -71,7 +71,14 @@ if _BUNDLE_RESOURCES not in sys.path:
 	sys.path.append(_BUNDLE_RESOURCES)
 
 import proofbook  # noqa: E402  (only importable once sys.path is set, above)
-from proofbook import discovery, frontmatter, names, ops, tree  # noqa: E402
+from proofbook import (  # noqa: E402
+	discovery,
+	edit,
+	frontmatter,
+	names,
+	ops,
+	tree,
+)
 
 PROOFBOOK_FORCE_NO_VANILLA = False
 
@@ -799,12 +806,13 @@ class ProofBookPalette(PalettePlugin):
 		self.rows = []
 		self.expanded = set()
 		self.selectedPath = None
-		# The tab ProofBook opened, and the exact text it pushed there. Both
-		# are needed by the refresh rules (spec §6): a page that changed on
-		# disk is re-pushed only while the tab still holds what ProofBook put
+		# The tab ProofBook opened, and what it pushed there — the text as it
+		# came off disk, alongside the token `tab.text` read back. Both are
+		# needed by the refresh rules (spec §6): a page that changed on disk
+		# is re-pushed only while the tab still holds what ProofBook put
 		# there, because anything else in it is the designer's typing.
 		self.proofTab = None
-		self.pushedText = None
+		self.pushed = None
 		# Set while the adapter drives the List2's selection itself, so the
 		# selection callback can tell a designer's click from its own writing.
 		self.settingSelection = False
@@ -1124,55 +1132,149 @@ class ProofBookPalette(PalettePlugin):
 	def _display_page(self, path):
 		"""Show a selected proof-page's proof text in the Edit view.
 
-		This read is inline and on the main thread, and is **not yet routed**:
-		ADR-0004 allows an inline read only for a file that is already
-		materialised, and nothing here asks. Selecting a page that a cloud
-		provider is holding as a placeholder therefore blocks Glyphs until it
-		downloads. Issue #25 is where the `SF_DATALESS` check and the worker
-		thread land, and this is the read they route.
-
 		Stripping the header is the core's (ADR-0005): every lenient form
 		ADR-0003 accepts is string work, and string work belongs on the side
 		of the seam a test can reach.
+		"""
+		text = self._read_page(path)
+		if text is None:
+			# The Edit view is left exactly as it is and the row stays
+			# selected: a page that could not be read has replaced nothing.
+			# The complaint is made here and not in the read, because a
+			# selection is a question the designer just asked and deserves an
+			# answer, while a refresh is a window switch — and a proof-book on
+			# a volume that is not mounted must not put an alert in front of
+			# them every time they come back.
+			self._alert(
+				"Could not read “%s”; it may not be downloaded yet."
+				% os.path.basename(self._page_path(path))
+			)
+			return
+		self._push_text(text)
+
+	@objc.python_method
+	def _read_page(self, path):
+		"""A proof-page's text with its header stripped, or None if it did not read.
+
+		This read is inline and on the main thread, and is **not yet routed**:
+		ADR-0004 allows an inline read only for a file that is already
+		materialised, and nothing here asks. Reading a page that a cloud
+		provider is holding as a placeholder therefore blocks Glyphs until it
+		downloads. Issue #25 is where the `SF_DATALESS` check and the worker
+		thread land, and this is the read they route — both callers of it, the
+		selection and the refresh.
 		"""
 		filepath = self._page_path(path)
 		try:
 			with open(filepath, "rb") as handle:
 				data = handle.read()
 		except OSError:
-			# The Edit view is left exactly as it is and the row stays
-			# selected: a page that could not be read has replaced nothing.
-			self._alert(
-				"Could not read “%s”; it may not be downloaded yet."
-				% os.path.basename(filepath)
-			)
-			return
-		self._push_text(frontmatter.read(data).text)
+			return None
+		return frontmatter.read(data).text
 
 	@objc.python_method
 	def _push_text(self, text):
 		"""Write into ProofBook's own tab, or open one. Never the designer's.
 
 		A tab the designer opened is theirs — it may hold a proof they have
-		been editing for an hour — so the only tab ProofBook ever writes to is
-		one it opened itself, and only while that is the tab in front.
+		been editing for an hour — and so is one ProofBook opened that they
+		have since typed into. Which of the two it is, is the core's question
+		(spec §5); this performs the answer.
 		"""
 		font = self._font()
 		if font is None:
 			return
-		# `==`, not `is`: two PyObjC proxies for one tab are two objects, and
-		# an identity test would open a second tab on every selection.
 		tab = font.currentTab
-		if tab is None or self.proofTab is None or tab != self.proofTab:
+		# The tab has to be in front as well as ProofBook's: pushing a
+		# selection into a tab the designer is not looking at would leave the
+		# click with no visible effect at all.
+		if tab is not None and tab != self._proofbook_tab(font):
+			tab = None
+		if edit.destination(self.pushed, self._tab_text(tab)) == edit.NEW_TAB:
 			tab = font.newTab(text)
 		else:
 			tab.text = text
-		if tab is None:
+		self._remember(tab, text)
+
+	@objc.python_method
+	def _refresh_page(self):
+		"""Re-push the displayed page if it changed and the tab is still ProofBook's.
+
+		The other half of spec §6. The question is the selection path's, asked
+		of the core so that the two can never drift apart — but the tab need
+		not be the current one here: a page that changed on disk belongs in
+		the tab ProofBook opened for it whether or not the designer is looking
+		at it, and a refresh may not open a tab to say so.
+
+		**The question is asked before the file is read, not after.** This
+		runs on every become-key and after every rename, and the read is the
+		unrouted main-thread one ADR-0004 is about: a tab the designer has
+		typed into, or no ProofBook tab at all, is `LEAVE` whatever the file
+		says, and paying a placeholder download to be told so would put a
+		cloud round trip behind a window switch and behind tagging.
+
+		Nothing is disowned when the answer is no. "Stops being ProofBook's"
+		needs no step of its own, because the question is asked afresh every
+		time rather than latched: a tab holding the designer's text fails it
+		here and on the next selection too, and text restored to exactly what
+		was pushed is ProofBook's again, which is the point.
+		"""
+		font = self._font()
+		tab = self._proofbook_tab(font) if font is not None else None
+		tab_text = self._tab_text(tab)
+		if self.selectedPath is None or not edit.is_proofbook_tab(
+			self.pushed, tab_text
+		):
 			return
+		text = self._read_page(self.selectedPath)
+		if edit.refresh(self.pushed, tab_text, text) == edit.LEAVE:
+			return
+		tab.text = text
+		self._remember(tab, text)
+
+	@objc.python_method
+	def _remember(self, tab, text):
+		"""Keep the tab and what it now holds, and redraw it.
+
+		**What is kept is what `tab.text` reads back**, not the string that
+		was written: the Edit view stores glyphs, not characters, so the round
+		trip need not be the identity. Remembering the written string instead
+		would fail the test on a page that nothing had touched, which is a new
+		tab per click, silently.
+
+		This reads `text` back on the same runloop turn as the write, which
+		assumes the Edit view has taken the assignment by then. It is the one
+		assumption left in spec §5 that Glyphs has to settle: a read that came
+		back with the *previous* tab's text would keep a token matching a page
+		that is not on screen.
+		"""
+		if tab is None:
+			return  # `newTab` refused; there is no tab to call ProofBook's.
 		self.proofTab = tab
-		self.pushedText = text
+		self.pushed = edit.Pushed(text, self._tab_text(tab))
 		# `redraw`, not `forceRedraw`: this tab changed, not every open one.
 		tab.redraw()
+
+	@objc.python_method
+	def _proofbook_tab(self, font):
+		"""The tab ProofBook opened, if it is still open, else None.
+
+		Asked of the font rather than trusted: a tab the designer closed
+		leaves `self.proofTab` holding a controller whose window has gone, and
+		reading `text` off that is not a question worth asking.
+
+		`==`, not `is`: two PyObjC proxies for one tab are two objects, and an
+		identity test would open a second tab on every selection.
+		"""
+		if self.proofTab is None:
+			return None
+		tabs = font.tabs or []
+		return self.proofTab if any(tab == self.proofTab for tab in tabs) else None
+
+	@objc.python_method
+	def _tab_text(self, tab):
+		"""What that tab currently holds, or None when there is no such tab."""
+		return tab.text if tab is not None else None
 
 	@objc.python_method
 	def _page_path(self, path):
@@ -1238,7 +1340,12 @@ class ProofBookPalette(PalettePlugin):
 			self.expanded = set()
 			self.selectedPath = None
 		self.entries = self._listing(book) if book else []
+		# A page that has left the listing takes the selection with it — and
+		# nothing else: the Edit view is left exactly as it is, because
+		# deleting a file must not blank a tab that may still be being read
+		# (spec §6). An external rename reads as a delete plus an add.
 		self.selectedPath = tree.selection_after(self.selectedPath, self.entries)
+		self._refresh_page()
 		self._draw()
 
 	@objc.python_method
