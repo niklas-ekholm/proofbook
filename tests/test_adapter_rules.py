@@ -28,6 +28,8 @@ FILESYSTEM_CALLS = {
 	"os.lstat",
 	"os.remove",
 	"os.rename",
+	"os.replace",
+	"NSFileManager.defaultManager",
 	"os.path.abspath",
 	"os.path.exists",
 	"os.path.isdir",
@@ -525,6 +527,124 @@ class AdapterRules(unittest.TestCase):
 						{"self._push_text"}
 					),
 					set(),
+				)
+
+	# -- Tagging (issue #19) ----------------------------------------------
+
+	def test_tagging_never_overwrites_at_the_syscall(self):
+		# The core answers "is that name free" from a listing, and a file can
+		# appear between the walk and the click. `os.rename` would overwrite
+		# it without a word; `moveItemAtPath:toPath:error:` refuses.
+		self.assertNotIn(
+			"os.rename",
+			pysource.called_names(self.adapter),
+			"os.rename overwrites silently on POSIX, and ProofBook never "
+			"overwrites (spec §8)",
+		)
+		self.assertIn(
+			"NSFileManager.defaultManager",
+			pysource.called_names(pysource.function(self.adapter, "_rename")),
+		)
+
+	def test_a_collision_is_always_asked_about_and_never_written(self):
+		perform = pysource.function(self.adapter, "_perform")
+		self.assertIsNotNone(perform)
+		self.assertTrue(pysource.attribute_reads(perform, "plan.collision"))
+		self.assertIn("self._ask_about", pysource.called_names(perform))
+
+	def test_the_collision_dialog_offers_save_new_and_cancel(self):
+		ask = pysource.function(self.adapter, "_ask_about")
+		self.assertIn("dialogs.ask", pysource.called_names(ask))
+		self.assertIn("buttonTitles", pysource.keyword_argument_names(ask))
+		self.assertEqual(pysource.module_constant(self.adapter, "SAVE_NEW"), 1)
+		# Distinct from *Save new* rather than merely falsy: vanilla reports a
+		# dialog dismissed with no button as None, and a `not answer` test
+		# would read that as a confirmation.
+		self.assertNotEqual(
+			pysource.module_constant(self.adapter, "CANCEL"),
+			pysource.module_constant(self.adapter, "SAVE_NEW"),
+		)
+
+	def test_the_answer_to_a_collision_is_applied_by_the_core(self):
+		# The dialog sources the answer; what the answer *means* is a branch,
+		# and ADR-0005 puts branches where a test can run them.
+		ask = pysource.function(self.adapter, "_ask_about")
+		self.assertIn("ops.resolved", pysource.called_names(ask))
+
+	def test_the_collision_dialog_names_files_by_their_path_in_the_book(self):
+		# Once *Move to* reuses this, two files in different folders can share
+		# a filename, and a dialog naming the same string twice explains
+		# nothing (spec §8: "the dialog names both filenames").
+		ask = pysource.function(self.adapter, "_ask_about")
+		self.assertTrue(pysource.attribute_reads(ask, "collision.blocking"))
+		self.assertNotIn(
+			"os.path.basename",
+			pysource.called_names(ask),
+			"a basename drops the folder that tells the two files apart",
+		)
+
+	def test_the_status_the_swatch_writes_is_the_cores_decision(self):
+		# ADR-0005: reading a status out of a filename and choosing the next
+		# one is string work, and string work lives where a test can reach it.
+		tagging = pysource.function(self.adapter, "tagPage")
+		self.assertIn("ops.cycle_status", pysource.called_names(tagging))
+		self.assertEqual(pysource.attribute_reads(tagging, "names.STATUSES"), [])
+		self.assertEqual(
+			pysource.attribute_reads(tagging, "names.next_status"), []
+		)
+
+	def test_the_tree_is_redrawn_after_the_adapters_own_write(self):
+		self.assertIn(
+			"self._resolve",
+			pysource.called_names(pysource.function(self.adapter, "_rename")),
+			"spec §6 refreshes on become-key and after ProofBook's own "
+			"writes; a tag that leaves the old name on screen is the latter",
+		)
+
+	def test_a_swatch_click_does_not_become_a_selection(self):
+		# A right-click must not change the selection (issue #12), and a tag
+		# click has the same claim on it: tagging five rows would otherwise
+		# walk the designer through five proof-pages. The event has to stop
+		# at the cell, so the tagging branch must not reach super.
+		mouse_down = pysource.function(self.adapter, "mouseDown_")
+		self.assertIsNotNone(mouse_down, "the row view no longer takes clicks")
+		delegating = [
+			node
+			for node in ast.walk(mouse_down)
+			if isinstance(node, ast.Call)
+			and pysource.dotted_name(node.func) == "tag"
+		]
+		self.assertTrue(delegating, "nothing in mouseDown_ tags the row")
+		tail = mouse_down.body[-1]
+		self.assertIn(
+			"tag",
+			pysource.called_names(tail),
+			"the tagging branch must be the one that returns without "
+			"calling super, or the table selects the row behind the click",
+		)
+
+	def test_the_row_view_reaches_the_palette_only_through_vanillas_wrapper(self):
+		# A PyObjC object cannot be weakly referenced — `weakref.ref` on one
+		# raises TypeError — so a cell holding the palette would be a retain
+		# cycle, and the callbacks `__del__` removes would outlive the window
+		# and crash Glyphs. The route back is the one vanilla already uses.
+		callback = pysource.function(self.adapter, "_tagCallback")
+		self.assertIsNotNone(callback)
+		self.assertIn("view.vanillaWrapper", pysource.called_names(callback))
+		self.assertNotIn(
+			"weakref", pysource.imported_roots(self.adapter),
+			"weakref cannot hold a PyObjC object; do not reach for it",
+		)
+
+	def test_the_marker_column_is_hit_tested_where_it_is_drawn(self):
+		# One rect, asked for twice: a target that drifts from the ink is a
+		# swatch that stops answering to its own click.
+		self.assertIsNotNone(pysource.function(self.adapter, "_markerRect"))
+		for name in ["drawRect_", "mouseDown_"]:
+			with self.subTest(method=name):
+				self.assertIn(
+					"self._markerRect",
+					pysource.called_names(pysource.function(self.adapter, name)),
 				)
 
 	def test_nothing_built_at_load_time_touches_the_filesystem(self):

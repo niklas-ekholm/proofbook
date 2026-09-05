@@ -231,6 +231,8 @@ Clicking it cycles `TODO → WIP → DONE`, which renames the file. Tagging is t
 
 **No implicit owner**: clicking the swatch on an untagged page writes `common-words-WIP.txt` and nothing else. One click stays one click, with no dialog ambushing it.
 
+*(**Verified in Glyphs 4**: the swatch cycles and renames on a real proof-book, the tree and the coverage bar redraw without leaving the window, and the owner pill survives a tag. Four things the reasoning could not settle on its own. **The target is the whole marker column**, not the 9pt circle inside it — the circle is a target a trackpad misses, and the rest of the column is empty. **A tag is not a selection**: the click stops at the cell and never reaches the table, so tagging a row leaves the selection and the Edit view exactly as they were; under §6's rule a tab holding the designer's own text would otherwise earn a new tab per tag. **A folder row still toggles** — it has no status to cycle. And the **collision dialog was walked on a case-only collision**, `dup-WIP.txt` cycling onto an existing `Dup-DONE.txt`: on a case-insensitive volume the rename would otherwise have taken that file with it. *Cancel* left both alone; *Save new* produced one renamed file and never touched the one in the way.)*
+
 ### The context menu
 
 **Right-click targets the row under the cursor and never changes the selection or the Edit view** — a right-click that selected would destroy the tab you were reading in order to show you a menu. The cost is paid by a **disabled header item naming the target's subject** (the subject, not the filename), truncated in the middle when long.
@@ -254,7 +256,7 @@ Reveal in Finder
 Move to Trash
 ```
 
-- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `DONE → TODO`, and the menu is where a designer discovers what the swatch does at all.
+- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `TODO → DONE`, and the menu is where a designer discovers what the swatch does at all.
 - **Rename** opens a `vanilla.dialogs` modal on the **subject only**, prefilled, **showing the resulting filename** so tag preservation is visible rather than implied. No inline cell editing.
 - **Move to** is a submenu of the proof-book's folders, indented, plus the root. No `NSOpenPanel` — a destination outside the proof-book is not offerable. The current parent is **greyed, not omitted**. The item is disabled when the list would be empty.
 - **Duplicate** copies the text and **resets every claim**: `TODO`, no owner, **no note**, subject suffixed (`caps-2.txt`). A fixed rule that clears is not a guess; a new file never inherits a progress claim.

@@ -52,7 +52,7 @@ from AppKit import (
 	NSViewWidthSizable,
 	NSWindowDidBecomeKeyNotification,
 )
-from Foundation import NSObject, NSZeroRect
+from Foundation import NSFileManager, NSObject, NSZeroRect
 from GlyphsApp import DOCUMENTWASSAVED, Glyphs
 from GlyphsApp.plugins import PalettePlugin
 
@@ -71,7 +71,7 @@ if _BUNDLE_RESOURCES not in sys.path:
 	sys.path.append(_BUNDLE_RESOURCES)
 
 import proofbook  # noqa: E402  (only importable once sys.path is set, above)
-from proofbook import discovery, frontmatter, names, tree  # noqa: E402
+from proofbook import discovery, frontmatter, names, ops, tree  # noqa: E402
 
 PROOFBOOK_FORCE_NO_VANILLA = False
 
@@ -129,6 +129,13 @@ VIEW_HEIGHT_KEY = "com.niklasekholm.ProofBookPalette.ViewHeight"
 # palette with no window would draw "Font not saved" over a saved font, so
 # the wait is bounded rather than assumed.
 ATTACH_ATTEMPTS = 10
+
+# The collision dialog's two answers (spec §8). *Save new* renames with a
+# numeric suffix; anything else leaves the file untouched. Distinct values
+# rather than True/False so a dialog dismissed with neither — which vanilla
+# reports as None — cannot read as a confirmation.
+SAVE_NEW = 1
+CANCEL = 0
 
 # The palette's left margin, and the one number the whole palette lines up
 # on. Glyphs draws the section header — the palette's name and its collapse
@@ -374,8 +381,8 @@ class ProofBookRowView(NSView):
 			return
 		bounds = self.bounds()
 		emphasized = self._emphasized()
-		left = ROW_MARGIN + row.depth * ROW_INDENT
-		marker = NSMakeRect(left, 0, MARKER_WIDTH, bounds.size.height)
+		marker = self._markerRect(row, bounds)
+		left = marker.origin.x
 		if row.is_dir:
 			self._drawDisclosure(marker, row.expanded, emphasized)
 		else:
@@ -385,6 +392,69 @@ class ProofBookRowView(NSView):
 			pill = self._drawOwner(right, bounds, row.owner, emphasized)
 			right = pill.origin.x - SUBJECT_GAP
 		self._drawSubject(left + MARKER_WIDTH, right, bounds, row, emphasized)
+
+	@objc.python_method
+	def _markerRect(self, row, bounds):
+		"""The column holding a page's swatch or a folder's caret.
+
+		Drawn from here and hit-tested from `mouseDown_`, so the target and
+		the ink can never drift apart.
+		"""
+		return NSMakeRect(
+			ROW_MARGIN + row.depth * ROW_INDENT,
+			0,
+			MARKER_WIDTH,
+			bounds.size.height,
+		)
+
+	# -- Tagging ----------------------------------------------------------
+
+	def mouseDown_(self, event):
+		"""A click in a page's marker column tags it; anything else selects.
+
+		**The whole column is the target**, not the 9pt circle inside it.
+		Tagging is the highest-frequency action in ProofBook (spec §8) and a
+		circle that small is a target a trackpad misses; the rest of the
+		column is empty, so nothing else is being taken from the designer.
+
+		**Not calling super is the point.** The event stops here, so the
+		table never sees the click, and the selection and the Edit view are
+		left exactly as they were. Otherwise tagging five rows would walk the
+		designer through five proof-pages — and under issue #20's rule, a tab
+		holding their own typing would earn a new tab each time.
+		"""
+		row = getattr(self, "proofbookRow", None)
+		tag = self._tagCallback()
+		if row is None or row.is_dir or tag is None:
+			objc.super(ProofBookRowView, self).mouseDown_(event)
+			return
+		marker = self._markerRect(row, self.bounds())
+		point = self.convertPoint_fromView_(event.locationInWindow(), None)
+		# x alone: the column is the full height of the row.
+		if not marker.origin.x <= point.x < marker.origin.x + marker.size.width:
+			objc.super(ProofBookRowView, self).mouseDown_(event)
+			return
+		tag(row.path)
+
+	@objc.python_method
+	def _tagCallback(self):
+		"""The palette's tag handler, found the way vanilla finds a wrapper.
+
+		A cell view is built by List2 and never told which palette it belongs
+		to, so the route back is up the view hierarchy to the table, whose
+		`vanillaWrapper` is the tree the palette built and stamped. Held as a
+		bound method rather than as the palette, exactly like the selection
+		and button callbacks vanilla is already holding.
+		"""
+		view = self.superview()
+		while view is not None:
+			if view.respondsToSelector_("vanillaWrapper"):
+				wrapper = view.vanillaWrapper()
+				callback = getattr(wrapper, "proofbookTagCallback", None)
+				if callback is not None:
+					return callback
+			view = view.superview()
+		return None
 
 	@objc.python_method
 	def _drawDisclosure(self, marker, expanded, emphasized):
@@ -838,6 +908,10 @@ class ProofBookPalette(PalettePlugin):
 			drawFocusRing=False,
 			selectionCallback=self.treeSelectionChanged,
 		)
+		# The swatch click is not a selection — it must not become one — so
+		# it cannot arrive through selectionCallback. The row view reaches
+		# this by asking the table for its vanilla wrapper.
+		group.tree.proofbookTagCallback = self.tagPage
 		group.tree.show(False)
 		return group.getNSView()
 
@@ -968,6 +1042,81 @@ class ProofBookPalette(PalettePlugin):
 			return
 		self.expanded = tree.toggled(self.expanded, row.path)
 		self._draw_tree()
+
+	# -- Tagging ----------------------------------------------------------
+
+	@objc.python_method
+	def tagPage(self, path):
+		"""A click on a proof-page's swatch: cycle its status (spec §8).
+
+		Status lives in the filename, so this renames the file. The whole
+		decision — which status is next, what the name becomes, and whether
+		anything is in the way — is the core's; this performs the answer.
+		"""
+		self._perform(ops.cycle_status(path, self.entries))
+
+	@objc.python_method
+	def _perform(self, plan):
+		"""Carry out a plan, asking about a collision rather than overwriting."""
+		if plan.collision is not None:
+			plan = self._ask_about(plan.collision)
+		if plan.rename is None:
+			return
+		self._rename(plan.rename)
+
+	@objc.python_method
+	def _ask_about(self, collision):
+		"""*Save new* or *Cancel*, naming both files (spec §8).
+
+		Both names, because the designer is being asked about a name they
+		never typed: the one in the way, and the one that would be written.
+		Named by their path within the proof-book rather than by basename —
+		once *Move to* reuses this, two files in different folders can share
+		a filename, and a dialog naming the same string twice explains
+		nothing. The sentence says nothing about tagging for the same
+		reason: rename, move and duplicate all arrive here.
+
+		A palette running without vanilla has no way to ask, so it cancels.
+		ProofBook never proceeds silently.
+		"""
+		if dialogs is None:
+			return ops.NOTHING_TO_DO
+		answer = dialogs.ask(
+			"“%s” already exists." % collision.blocking,
+			"ProofBook will not overwrite it. Save as “%s” instead?"
+			% collision.rename.destination,
+			alertStyle="warning",
+			buttonTitles=[("Save new", SAVE_NEW), ("Cancel", CANCEL)],
+		)
+		return ops.resolved(collision, answer == SAVE_NEW)
+
+	@objc.python_method
+	def _rename(self, rename):
+		"""Move one file, and refresh — this is one of ProofBook's own writes.
+
+		`NSFileManager` rather than `os.rename`, which overwrites silently on
+		POSIX: the core answered from a listing, and a file can appear between
+		the walk and the click. This one refuses, so "never overwrite" is
+		enforced at the syscall and not only at the plan.
+		"""
+		source = self._page_path(rename.source)
+		destination = self._page_path(rename.destination)
+		ok, error = NSFileManager.defaultManager().moveItemAtPath_toPath_error_(
+			source, destination, None
+		)
+		if not ok:
+			self._alert(
+				"Could not rename “%s”: %s"
+				% (os.path.basename(source), error.localizedDescription())
+			)
+		elif self.selectedPath == rename.source:
+			# ProofBook renamed this one, so the selection follows it. Only a
+			# rename ProofBook did not perform reads as a delete (spec §6).
+			self.selectedPath = rename.destination
+		# Refresh either way: a rename that failed usually means the folder
+		# moved underneath the palette, which is exactly when the tree is
+		# stale. This is the "after its own writes" half of spec §6.
+		self._resolve()
 
 	# -- The Edit view ----------------------------------------------------
 

@@ -43,6 +43,21 @@ OWNER_MAX_LETTERS = 4
 Name = namedtuple("Name", "subject status owner tagged")
 
 
+def next_status(status):
+	"""The status the swatch writes next: `TODO` -> `WIP` -> `DONE` -> `TODO`.
+
+	The cycle is the whole of the swatch's behaviour, and it **wraps**. That
+	is what lets tagging be a direct target with no dialog on it: a misclick
+	is undone by another click or two around the cycle (spec §8), and a cycle
+	that stopped at `DONE` would leave one unreachable by the swatch at all.
+
+	What it cannot do is *jump*: `DONE` is two clicks from `TODO` and never
+	one. That is why the context menu offers the three statuses directly —
+	and it is also where a designer discovers what the swatch does.
+	"""
+	return STATUSES[(STATUSES.index(_checked(status)) + 1) % len(STATUSES)]
+
+
 def is_proof_page(filename):
 	"""Is this filename a proof-page?
 
@@ -87,8 +102,7 @@ def filename(subject, status=TODO, owner=None, tagged=True):
 	resetting every claim lands on `caps-2.txt`, not `caps-2-TODO.txt`, and the
 	plainer folder wins wherever the spec has no clear preference.
 	"""
-	if status.upper() not in STATUSES:
-		raise ValueError("not a status: %r" % (status,))
+	status = _checked(status)
 	if owner is not None and not is_owner(owner):
 		raise ValueError("not an owner: %r" % (owner,))
 	if owner is not None and not tagged:
@@ -96,7 +110,7 @@ def filename(subject, status=TODO, owner=None, tagged=True):
 
 	segments = [subject]
 	if tagged:
-		segments.append(status.upper())
+		segments.append(status)
 	if owner is not None:
 		segments.append(owner.upper())
 	return SEGMENT_SEPARATOR.join(segments) + EXTENSION
@@ -105,6 +119,14 @@ def filename(subject, status=TODO, owner=None, tagged=True):
 def display_subject(subject):
 	"""The subject as the palette draws it: hyphens rendered as spaces."""
 	return subject.replace(SEGMENT_SEPARATOR, " ")
+
+
+def _checked(status):
+	"""`status` canonicalised, or a ValueError naming what was passed instead."""
+	upper = status.upper()
+	if upper not in STATUSES:
+		raise ValueError("not a status: %r" % (status,))
+	return upper
 
 
 def _split_extension(filename):
