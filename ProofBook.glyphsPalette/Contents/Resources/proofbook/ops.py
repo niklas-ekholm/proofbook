@@ -1,4 +1,4 @@
-"""The verbs, and the one collision rule all of them obey (spec §8).
+"""Planning ProofBook's writes, and the one collision rule they obey (spec §8).
 
 Status and owner live in the filename (ADR-0001), so **tagging is a rename** —
 which makes the highest-frequency action in ProofBook also one that can find
@@ -39,6 +39,18 @@ Collision = namedtuple("Collision", "blocking rename")
 Plan = namedtuple("Plan", "rename collision")
 
 NOTHING_TO_DO = Plan(None, None)
+
+
+def resolved(collision, save_new):
+	"""What to do once the designer has answered the collision dialog.
+
+	*Save new* performs the rename the collision was carrying; anything else
+	performs nothing — *Cancel*, and equally a dialog dismissed with no button
+	at all, which vanilla reports as neither. The branch lives here rather
+	than in the adapter so that "Cancel leaves the file untouched" is a claim
+	a test can make, instead of a shape a source assertion has to guess at.
+	"""
+	return Plan(collision.rename, None) if save_new else NOTHING_TO_DO
 
 
 def cycle_status(path, entries):
@@ -109,8 +121,28 @@ def _suffixed(filename, suffix):
 		# separate rather than merging.
 		return "%s%s%d" % (filename, names.SEGMENT_SEPARATOR, suffix)
 	page = names.parse(filename)
-	subject = "%s%s%d" % (page.subject, names.SEGMENT_SEPARATOR, suffix)
+	subject = "%s%s%d" % (
+		_unsuffixed(page.subject), names.SEGMENT_SEPARATOR, suffix
+	)
 	return names.filename(subject, page.status, page.owner, page.tagged)
+
+
+def _unsuffixed(subject):
+	"""`caps-2` back to `caps`, so a second collision counts on rather than nests.
+
+	A page that collides twice must reach `caps-3`; `caps-2-2` is a subject
+	drifting further from the page's own name with every collision, and
+	"incrementing until free" reads as counting, not nesting.
+
+	The cost is that a trailing number a *designer* typed is indistinguishable
+	from one ProofBook appended, so a hand-named `caps-2` counts up to
+	`caps-3` rather than to `caps-2-2`. That is the better of the two, and
+	neither overwrites anything: the name written is free either way.
+	"""
+	head, separator, tail = subject.rpartition(names.SEGMENT_SEPARATOR)
+	if separator and head and tail.isdigit():
+		return head
+	return subject
 
 
 def _taken(entries, folder, ignoring=None):

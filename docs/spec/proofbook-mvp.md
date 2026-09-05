@@ -254,7 +254,7 @@ Reveal in Finder
 Move to Trash
 ```
 
-- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `DONE → TODO`, and the menu is where a designer discovers what the swatch does at all.
+- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `TODO → DONE`, and the menu is where a designer discovers what the swatch does at all.
 - **Rename** opens a `vanilla.dialogs` modal on the **subject only**, prefilled, **showing the resulting filename** so tag preservation is visible rather than implied. No inline cell editing.
 - **Move to** is a submenu of the proof-book's folders, indented, plus the root. No `NSOpenPanel` — a destination outside the proof-book is not offerable. The current parent is **greyed, not omitted**. The item is disabled when the list would be empty.
 - **Duplicate** copies the text and **resets every claim**: `TODO`, no owner, **no note**, subject suffixed (`caps-2.txt`). A fixed rule that clears is not a guess; a new file never inherits a progress claim.

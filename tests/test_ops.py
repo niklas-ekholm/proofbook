@@ -32,6 +32,13 @@ class Cycle(unittest.TestCase):
 		self.assertEqual(names.next_status(names.WIP), names.DONE)
 
 	def test_the_cycle_wraps_from_done_back_to_todo(self):
+		# Spec §8 said both "a misclick is undone by another click or two
+		# around the cycle" and "the cycle cannot jump `DONE -> TODO`", which
+		# cannot both hold. The first is load-bearing — it is the whole reason
+		# the swatch can be a direct target with no dialog on it, and a cycle
+		# stopping at DONE leaves a misclick unfixable by the swatch — so the
+		# cycle wraps, and §8's second line has been corrected to name the
+		# jump that really is impossible, `TODO -> DONE` in one click.
 		self.assertEqual(names.next_status(names.DONE), names.TODO)
 
 	def test_a_status_outside_the_closed_set_is_refused(self):
@@ -81,7 +88,7 @@ class Retag(unittest.TestCase):
 
 	def test_tagging_an_untagged_page_writes_a_status_and_no_owner(self):
 		# The whole of "no implicit owner": one click stays one click, and
-		# the plugin never guesses initials (spec §8, issue #10).
+		# ProofBook never guesses initials (spec §8, issue #10).
 		plan = ops.retag(
 			"common-words.txt", names.WIP, listing("common-words.txt")
 		)
@@ -163,6 +170,32 @@ class Collisions(unittest.TestCase):
 		)
 		self.assertEqual(plan.collision.rename.destination, "caps-4-DONE-NE.txt")
 
+	def test_a_second_collision_counts_on_rather_than_nesting(self):
+		# `caps-2` colliding again is `caps-3`, never `caps-2-2`: the subject
+		# must not drift further from the page's own name on every collision.
+		plan = ops.retag(
+			"caps-2-WIP-NE.txt",
+			names.DONE,
+			listing(
+				"caps-2-WIP-NE.txt",
+				"caps-DONE-NE.txt",
+				"caps-2-DONE-NE.txt",
+			),
+		)
+		self.assertEqual(plan.collision.rename.destination, "caps-3-DONE-NE.txt")
+
+	def test_a_subject_ending_in_a_number_counts_on_from_it(self):
+		# A trailing number a designer typed cannot be told from one
+		# ProofBook appended, and this is the better of the two readings.
+		plan = ops.move(
+			"draft-2.txt", "final-2.txt", listing("draft-2.txt", "final-2.txt")
+		)
+		self.assertEqual(plan.collision.rename.destination, "final-3.txt")
+
+	def test_a_subject_ending_in_a_hyphen_is_left_alone(self):
+		plan = ops.move("a.txt", "caps-.txt", listing("a.txt", "caps-.txt"))
+		self.assertEqual(plan.collision.rename.destination, "caps--2.txt")
+
 	def test_a_name_taken_in_another_folder_does_not_block(self):
 		plan = ops.retag(
 			"caps-WIP.txt",
@@ -193,6 +226,34 @@ class Collisions(unittest.TestCase):
 		)
 		self.assertIsNone(plan.rename)
 		self.assertIsNone(plan.collision)
+
+
+class Answering(unittest.TestCase):
+	"""The designer's answer to the collision dialog, applied.
+
+	The branch is core so that *Cancel* is covered by a test that runs it,
+	not by a source assertion about a dialog no test can open.
+	"""
+
+	def setUp(self):
+		self.collision = ops.retag(
+			"caps-WIP-NE.txt",
+			names.DONE,
+			listing("caps-WIP-NE.txt", "caps-DONE-NE.txt"),
+		).collision
+
+	def test_save_new_performs_the_suffixed_rename(self):
+		plan = ops.resolved(self.collision, True)
+		self.assertEqual(plan.rename.destination, "caps-2-DONE-NE.txt")
+		self.assertIsNone(plan.collision)
+
+	def test_cancel_leaves_the_file_untouched(self):
+		self.assertEqual(ops.resolved(self.collision, False), ops.NOTHING_TO_DO)
+
+	def test_an_answer_that_is_no_answer_cancels(self):
+		# vanilla reports a dialog dismissed with no button as None, and
+		# ProofBook never proceeds silently.
+		self.assertEqual(ops.resolved(self.collision, None), ops.NOTHING_TO_DO)
 
 
 class Move(unittest.TestCase):

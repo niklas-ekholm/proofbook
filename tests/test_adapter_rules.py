@@ -565,6 +565,24 @@ class AdapterRules(unittest.TestCase):
 			pysource.module_constant(self.adapter, "SAVE_NEW"),
 		)
 
+	def test_the_answer_to_a_collision_is_applied_by_the_core(self):
+		# The dialog sources the answer; what the answer *means* is a branch,
+		# and ADR-0005 puts branches where a test can run them.
+		ask = pysource.function(self.adapter, "_ask_about")
+		self.assertIn("ops.resolved", pysource.called_names(ask))
+
+	def test_the_collision_dialog_names_files_by_their_path_in_the_book(self):
+		# Once *Move to* reuses this, two files in different folders can share
+		# a filename, and a dialog naming the same string twice explains
+		# nothing (spec §8: "the dialog names both filenames").
+		ask = pysource.function(self.adapter, "_ask_about")
+		self.assertTrue(pysource.attribute_reads(ask, "collision.blocking"))
+		self.assertNotIn(
+			"os.path.basename",
+			pysource.called_names(ask),
+			"a basename drops the folder that tells the two files apart",
+		)
+
 	def test_the_status_the_swatch_writes_is_the_cores_decision(self):
 		# ADR-0005: reading a status out of a filename and choosing the next
 		# one is string work, and string work lives where a test can reach it.

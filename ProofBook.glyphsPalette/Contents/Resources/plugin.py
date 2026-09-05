@@ -1066,29 +1066,29 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _ask_about(self, collision):
-		"""*Save new* or *Cancel*, naming both filenames (spec §8).
+		"""*Save new* or *Cancel*, naming both files (spec §8).
 
 		Both names, because the designer is being asked about a name they
 		never typed: the one in the way, and the one that would be written.
-		Anything that is not *Save new* — including a dialog dismissed
-		without a button, and a palette running without vanilla — cancels.
+		Named by their path within the proof-book rather than by basename —
+		once *Move to* reuses this, two files in different folders can share
+		a filename, and a dialog naming the same string twice explains
+		nothing. The sentence says nothing about tagging for the same
+		reason: rename, move and duplicate all arrive here.
+
+		A palette running without vanilla has no way to ask, so it cancels.
 		ProofBook never proceeds silently.
 		"""
 		if dialogs is None:
 			return ops.NOTHING_TO_DO
 		answer = dialogs.ask(
-			"“%s” already exists." % os.path.basename(collision.blocking),
-			"ProofBook will not overwrite it. Save the tagged page as "
-			"“%s” instead?"
-			% os.path.basename(collision.rename.destination),
+			"“%s” already exists." % collision.blocking,
+			"ProofBook will not overwrite it. Save as “%s” instead?"
+			% collision.rename.destination,
 			alertStyle="warning",
 			buttonTitles=[("Save new", SAVE_NEW), ("Cancel", CANCEL)],
 		)
-		return (
-			ops.Plan(collision.rename, None)
-			if answer == SAVE_NEW
-			else ops.NOTHING_TO_DO
-		)
+		return ops.resolved(collision, answer == SAVE_NEW)
 
 	@objc.python_method
 	def _rename(self, rename):
