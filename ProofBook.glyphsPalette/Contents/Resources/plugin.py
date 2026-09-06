@@ -46,13 +46,15 @@ from AppKit import (
 	NSScreen,
 	NSScrollView,
 	NSTableViewStylePlain,
+	NSTextDidEndEditingNotification,
 	NSTextField,
 	NSView,
 	NSViewHeightSizable,
 	NSViewWidthSizable,
 	NSWindowDidBecomeKeyNotification,
+	NSWindowDidResignKeyNotification,
 )
-from Foundation import NSFileManager, NSObject, NSZeroRect
+from Foundation import NSFileManager, NSObject, NSURL, NSZeroRect
 from GlyphsApp import DOCUMENTWASSAVED, Glyphs
 from GlyphsApp.plugins import PalettePlugin
 
@@ -211,6 +213,27 @@ COVERAGE_CAPTION_HEIGHT = 14
 # Where the tree starts, clear of both.
 TREE_TOP = COVERAGE_CAPTION_TOP + COVERAGE_CAPTION_HEIGHT + 2
 
+# The note pane along the foot of the palette (spec §4): a strip carrying the
+# word `Note` and a caret, and the editor it collapses. Collapsing changes
+# what is visible and not the palette's height, so the tree takes back
+# exactly the space the editor gives up.
+NOTE_LABEL = "Note"
+NOTE_HEADER_HEIGHT = 18
+# Four lines of note and the air around them. Deliberately small: the tree is
+# what the palette is for, and at the minimum palette height every point the
+# pane takes is a proof-page the designer cannot see.
+NOTE_EDITOR_HEIGHT = 64
+NOTE_FONT_SIZE = 11
+# Remembered like the palette's height, and keyed off the bundle identifier
+# for the same reason: `self.name` is localised, so a designer switching
+# Glyphs to German would silently find the pane open again.
+NOTE_COLLAPSED_KEY = "com.niklasekholm.ProofBookPalette.NoteCollapsed"
+# The file a commit writes before it swaps the new bytes in. A leading dot
+# and no `.txt`: invisible in Finder and never a row in the tree, so a commit
+# interrupted by a crash leaves nothing the designer has to recognise.
+NOTE_TEMP_PREFIX = "."
+NOTE_TEMP_SUFFIX = ".proofbook-note"
+
 
 def _ceiling_height(window=None):
 	"""The tallest the palette may be on the screen it is on right now.
@@ -332,6 +355,45 @@ def _chevron(expanded, color):
 		NSImageSymbolConfiguration.configurationWithHierarchicalColor_(color)
 	)
 	return image.imageWithSymbolConfiguration_(configuration)
+
+
+def _draw_chevron(rect, expanded, color):
+	"""The system chevron, left-aligned in `rect`, or a drawn arrowhead.
+
+	Shared by the folder rows and the note pane's header, which are the two
+	things in the palette that open and close: one caret, drawn once, so the
+	tree and the pane cannot start disagreeing about what open looks like.
+	"""
+	image = _chevron(expanded, color)
+	if image is None:
+		_draw_centered(
+			_attributed(
+				DISCLOSURE_EXPANDED if expanded else DISCLOSURE_COLLAPSED,
+				NSFont.systemFontOfSize_(DISCLOSURE_FONT_SIZE),
+				color,
+			),
+			NSMakeRect(
+				rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+			),
+		)
+		return
+	size = image.size()
+	image.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
+		NSMakeRect(
+			rect.origin.x,
+			rect.origin.y + (rect.size.height - size.height) / 2.0,
+			size.width,
+			size.height,
+		),
+		NSZeroRect,
+		NSCompositingOperationSourceOver,
+		1.0,
+		# The view is flipped and the symbol is not: without this the chevron
+		# draws upside down, which for `chevron.down` is a `chevron.up` and
+		# reads as something that is already open.
+		True,
+		None,
+	)
 
 
 def _capsule(rect):
@@ -473,40 +535,7 @@ class ProofBookRowView(NSView):
 		puts every folder a couple of points out of the one margin the
 		palette keeps.
 		"""
-		color = _muted_color(emphasized)
-		image = _chevron(expanded, color)
-		if image is None:
-			_draw_centered(
-				_attributed(
-					DISCLOSURE_EXPANDED if expanded else DISCLOSURE_COLLAPSED,
-					NSFont.systemFontOfSize_(DISCLOSURE_FONT_SIZE),
-					color,
-				),
-				NSMakeRect(
-					marker.origin.x,
-					marker.origin.y,
-					marker.size.width,
-					marker.size.height,
-				),
-			)
-			return
-		size = image.size()
-		image.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
-			NSMakeRect(
-				marker.origin.x,
-				marker.origin.y + (marker.size.height - size.height) / 2.0,
-				size.width,
-				size.height,
-			),
-			NSZeroRect,
-			NSCompositingOperationSourceOver,
-			1.0,
-			# The row view is flipped and the symbol is not: without this the
-			# chevron draws upside down, which for `chevron.down` is a
-			# `chevron.up` and reads as a folder that is already open.
-			True,
-			None,
-		)
+		_draw_chevron(marker, expanded, _muted_color(emphasized))
 
 	@objc.python_method
 	def _drawSwatch(self, marker, status, emphasized):
@@ -632,6 +661,73 @@ class ProofBookCoverageBarView(NSView):
 		NSColor.systemOrangeColor().set()
 		NSBezierPath.fillRect_(NSMakeRect(done, 0, wip, bounds.size.height))
 		NSGraphicsContext.restoreGraphicsState()
+
+
+class ProofBookNotePaneView(NSView):
+	"""The `Note` strip the pane collapses by, drawn like a folder row.
+
+	Drawn rather than composed for the same reason a tree row is: this is a
+	caret and a word at fixed positions, and a button carrying a chevron
+	image would still have to be stripped of its bezel and its title style to
+	sit under the tree without announcing itself.
+
+	It holds one piece of state, which is the palette's — whether the pane is
+	collapsed — and it is handed it rather than asking, so the view and the
+	defaults key cannot drift apart.
+	"""
+
+	@objc.python_method
+	def setCollapsed(self, collapsed):
+		self.proofbookCollapsed = collapsed
+		self.setNeedsDisplay_(True)
+
+	def isFlipped(self):
+		return True
+
+	def drawRect_(self, rect):
+		collapsed = getattr(self, "proofbookCollapsed", False)
+		bounds = self.bounds()
+		color = _muted_color(False)
+		marker = NSMakeRect(PALETTE_MARGIN, 0, MARKER_WIDTH, bounds.size.height)
+		_draw_chevron(marker, not collapsed, color)
+		left = marker.origin.x + MARKER_WIDTH
+		_draw_centered(
+			_attributed(
+				NOTE_LABEL, NSFont.systemFontOfSize_(NOTE_FONT_SIZE), color
+			),
+			NSMakeRect(left, 0, bounds.size.width - left, bounds.size.height),
+		)
+
+	def mouseDown_(self, event):
+		"""The whole strip toggles, not the caret alone.
+
+		The same argument the marker column settles for tagging: a chevron is
+		a target a trackpad misses, and there is nothing else along this strip
+		to take the click from.
+		"""
+		toggle = self._toggleCallback()
+		if toggle is None:
+			objc.super(ProofBookNotePaneView, self).mouseDown_(event)
+			return
+		toggle()
+
+	@objc.python_method
+	def _toggleCallback(self):
+		"""The palette's toggle, found the way vanilla finds a wrapper.
+
+		The same route the tree rows take, and for the same reason: a view
+		holding the palette would be a retain cycle PyObjC cannot break, and
+		the callbacks `__del__` removes would outlive the window.
+		"""
+		view = self
+		while view is not None:
+			if view.respondsToSelector_("vanillaWrapper"):
+				wrapper = view.vanillaWrapper()
+				callback = getattr(wrapper, "proofbookToggleCallback", None)
+				if callback is not None:
+					return callback
+			view = view.superview()
+		return None
 
 
 # Scroll chaining. Glyphs' palette sidebar scrolls, and ProofBook sits in
@@ -770,10 +866,19 @@ if vanilla is not None:
 		def set(self, count):
 			self._nsObject.setCoverage(count)
 
+	class ProofBookNotePaneHeader(vanilla.Group):
+		"""The note pane's strip, wrapped so the palette can place and hide it."""
+
+		nsViewClass = ProofBookNotePaneView
+
+		def setCollapsed(self, collapsed):
+			self._nsObject.setCollapsed(collapsed)
+
 else:
 	ProofBookTree = None
 	ProofBookRowCell = None
 	ProofBookCoverageBar = None
+	ProofBookNotePaneHeader = None
 
 
 class ProofBookPalette(PalettePlugin):
@@ -813,9 +918,24 @@ class ProofBookPalette(PalettePlugin):
 		# there, because anything else in it is the designer's typing.
 		self.proofTab = None
 		self.pushed = None
+		# The page the note pane is showing, what its note said when it was
+		# put there, and whether it may be typed into at all — a header
+		# ProofBook could not read is displayed and never rewritten (ADR-0003).
+		# `notePath` rather than the selection: a draft belongs to the page it
+		# was typed on, whatever is selected by the time it reaches disk.
+		self.notePath = None
+		self.noteOriginal = ""
+		self.noteEditable = False
+		# Whether the pane is collapsed *is* remembered, across windows and
+		# across launches, which is why it is read rather than initialised.
+		self.noteCollapsed = bool(Glyphs.defaults[NOTE_COLLAPSED_KEY])
 		# Set while the adapter drives the List2's selection itself, so the
 		# selection callback can tell a designer's click from its own writing.
 		self.settingSelection = False
+		# Set while a commit is in flight. A commit that has to complain puts
+		# an alert on screen, and an alert takes the key window away — which
+		# is itself a commit point.
+		self.committingNote = False
 
 		if vanilla is not None:
 			content = self._vanilla_view()
@@ -921,7 +1041,67 @@ class ProofBookPalette(PalettePlugin):
 		# this by asking the table for its vanilla wrapper.
 		group.tree.proofbookTagCallback = self.tagPage
 		group.tree.show(False)
+		self._note_pane(group)
 		return group.getNSView()
+
+	@objc.python_method
+	def _note_pane(self, group):
+		"""The collapsible note pane below the tree (spec §4).
+
+		**No callback on the editor.** A `TextEditor` callback fires on every
+		keystroke, and a commit is a read, a rewrite and a write of the whole
+		file; the note reaches disk at three moments instead (spec §6), none
+		of which is typing.
+
+		Built read-only, because nothing is selected yet: an empty pane that
+		can be typed into is a note with no page to belong to.
+		"""
+		group.noteHeader = ProofBookNotePaneHeader((0, 0, 0, NOTE_HEADER_HEIGHT))
+		group.noteHeader.proofbookToggleCallback = self._toggle_note_pane
+		group.noteEditor = vanilla.TextEditor((0, 0, 0, NOTE_EDITOR_HEIGHT), "")
+		view = group.noteEditor.getNSTextView()
+		view.setFont_(NSFont.systemFontOfSize_(NOTE_FONT_SIZE))
+		view.setEditable_(False)
+		# Selectable even when it may not be edited: a broken header shown in
+		# the pane is something the designer has to copy into a text editor
+		# to fix (spec §9).
+		view.setSelectable_(True)
+		self._layout_note()
+		group.noteHeader.show(False)
+		group.noteEditor.show(False)
+
+	@objc.python_method
+	def _layout_note(self):
+		"""Give the pane its strip and the tree everything else.
+
+		Collapsing the pane changes what is visible, not the palette's height
+		(spec §4): the tree grows into exactly the space the editor gives up,
+		so the panel is the same height open or shut and the designer's
+		dragged height means the same thing either way.
+		"""
+		group = self.paletteView.group
+		pane = NOTE_HEADER_HEIGHT
+		if not self.noteCollapsed:
+			pane += NOTE_EDITOR_HEIGHT
+		group.tree.setPosSize((0, TREE_TOP, 0, -pane))
+		group.noteHeader.setPosSize((0, -pane, 0, NOTE_HEADER_HEIGHT))
+		group.noteHeader.setCollapsed(self.noteCollapsed)
+		group.noteEditor.setPosSize(
+			(
+				PALETTE_MARGIN - TEXT_FIELD_INSET,
+				-NOTE_EDITOR_HEIGHT,
+				-PALETTE_MARGIN,
+				NOTE_EDITOR_HEIGHT,
+			)
+		)
+		group.noteEditor.show(not self.noteCollapsed)
+
+	@objc.python_method
+	def _toggle_note_pane(self):
+		"""Collapse the pane, or open it, and remember which."""
+		self.noteCollapsed = not self.noteCollapsed
+		Glyphs.defaults[NOTE_COLLAPSED_KEY] = self.noteCollapsed
+		self._layout_note()
 
 	@objc.python_method
 	def _appkit_view(self):
@@ -956,12 +1136,31 @@ class ProofBookPalette(PalettePlugin):
 		# switch, but a resolution that never re-runs strands the designer on
 		# an empty state with no way out, and §6 is the more specific rule.
 		# Re-reading the listing on every become-key is issue #20.
-		NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+		center = NSNotificationCenter.defaultCenter()
+		center.addObserver_selector_name_object_(
 			self,
 			"windowBecameKey:",
 			NSWindowDidBecomeKeyNotification,
 			None,
 		)
+		# The window resigning key is the load-bearing commit point (spec §6):
+		# it puts a draft on disk before the become-key refresh above reads
+		# the file back, so a refresh can never clobber an uncommitted note.
+		center.addObserver_selector_name_object_(
+			self,
+			"windowResignedKey:",
+			NSWindowDidResignKeyNotification,
+			None,
+		)
+		# Blur, the second commit point. Observed on the text view itself
+		# rather than taken as its delegate, which vanilla already is.
+		if vanilla is not None:
+			center.addObserver_selector_name_object_(
+				self,
+				"noteEditingEnded:",
+				NSTextDidEndEditingNotification,
+				self.paletteView.group.noteEditor.getNSTextView(),
+			)
 		# Nothing above this line has touched the disk, and the first read
 		# waits for the next runloop turn: `start` runs from `init`, before
 		# Glyphs has handed the palette its window controller, so there is no
@@ -989,6 +1188,16 @@ class ProofBookPalette(PalettePlugin):
 		if notification.object() != self._window():
 			return
 		self._resolve()
+
+	def windowResignedKey_(self, notification):
+		# `!=`, not `is not`: two PyObjC proxies for one window are two
+		# objects, and getting this wrong would commit every window's draft.
+		if notification.object() != self._window():
+			return
+		self._commit_note()
+
+	def noteEditingEnded_(self, notification):
+		self._commit_note()
 
 	def resolveWhenAttached_(self, sender):
 		"""The first resolve, once the palette knows which window it is in.
@@ -1039,6 +1248,10 @@ class ProofBookPalette(PalettePlugin):
 		"""
 		if self.settingSelection:
 			return
+		# The third commit point, and the one that keeps a draft with its own
+		# page: whatever is in the pane belongs to the page it was typed on,
+		# and that page is the one still selected here (spec §6).
+		self._commit_note()
 		indexes = sender.getSelectedIndexes()
 		if not indexes:
 			self.selectedPath = None
@@ -1136,8 +1349,8 @@ class ProofBookPalette(PalettePlugin):
 		ADR-0003 accepts is string work, and string work belongs on the side
 		of the seam a test can reach.
 		"""
-		text = self._read_page(path)
-		if text is None:
+		document = self._read_page(path)
+		if document is None:
 			# The Edit view is left exactly as it is and the row stays
 			# selected: a page that could not be read has replaced nothing.
 			# The complaint is made here and not in the read, because a
@@ -1145,16 +1358,18 @@ class ProofBookPalette(PalettePlugin):
 			# answer, while a refresh is a window switch — and a proof-book on
 			# a volume that is not mounted must not put an alert in front of
 			# them every time they come back.
+			self._show_note(path, None)
 			self._alert(
 				"Could not read “%s”; it may not be downloaded yet."
 				% os.path.basename(self._page_path(path))
 			)
 			return
-		self._push_text(text)
+		self._push_text(document.text)
+		self._show_note(path, document)
 
 	@objc.python_method
 	def _read_page(self, path):
-		"""A proof-page's text with its header stripped, or None if it did not read.
+		"""A proof-page read into its proof text and its note, or None if it did not read.
 
 		This read is inline and on the main thread, and is **not yet routed**:
 		ADR-0004 allows an inline read only for a file that is already
@@ -1170,7 +1385,7 @@ class ProofBookPalette(PalettePlugin):
 				data = handle.read()
 		except OSError:
 			return None
-		return frontmatter.read(data).text
+		return frontmatter.read(data)
 
 	@objc.python_method
 	def _push_text(self, text):
@@ -1226,7 +1441,9 @@ class ProofBookPalette(PalettePlugin):
 			self.pushed, tab_text
 		):
 			return
-		text = self._read_page(self.selectedPath)
+		document = self._read_page(self.selectedPath)
+		self._refresh_note(document)
+		text = document.text if document is not None else None
 		if edit.refresh(self.pushed, tab_text, text) == edit.LEAVE:
 			return
 		tab.text = text
@@ -1254,6 +1471,184 @@ class ProofBookPalette(PalettePlugin):
 		self.pushed = edit.Pushed(text, self._tab_text(tab))
 		# `redraw`, not `forceRedraw`: this tab changed, not every open one.
 		tab.redraw()
+
+	# -- The note ---------------------------------------------------------
+
+	@objc.python_method
+	def _show_note(self, path, document):
+		"""Put this page's note in the pane, and remember whose it is.
+
+		`document` is None for no selection at all and for a page that could
+		not be read: an empty, read-only pane either way, because a note with
+		no page under it has nowhere to go.
+
+		What the pane shows for a header ProofBook could not read is the
+		core's answer (ADR-0003) — the broken header, and no typing.
+		"""
+		shown = (
+			frontmatter.shown(document)
+			if document is not None
+			else frontmatter.Shown("", False)
+		)
+		# Set together, always: a pane showing one page's note while
+		# `notePath` names another writes a note into the wrong file.
+		self.notePath = path
+		self.noteOriginal = shown.text
+		self.noteEditable = shown.editable
+		if vanilla is None:
+			return
+		editor = self.paletteView.group.noteEditor
+		editor.set(shown.text)
+		editor.getNSTextView().setEditable_(shown.editable)
+
+	@objc.python_method
+	def _refresh_note(self, document):
+		"""Re-read the pane from disk, unless the designer is mid-draft.
+
+		Resign-key committed the draft before the window left, so there is
+		normally nothing here to protect; this is the guard for every way that
+		might not have happened — a commit that could not write, a file
+		renamed underneath the pane. A note the designer typed is worth more
+		than one a window switch happens to be holding.
+		"""
+		if document is None or self._note_draft() != self.noteOriginal:
+			return
+		self._show_note(self.notePath, document)
+
+	@objc.python_method
+	def _note_draft(self):
+		"""What the pane is holding right now."""
+		if vanilla is None:
+			return self.noteOriginal
+		return self.paletteView.group.noteEditor.get()
+
+	@objc.python_method
+	def _commit_note(self):
+		"""Write the pane's draft into its page's header (spec §6).
+
+		One of the three moments a note reaches disk — blur, selection change,
+		and the window resigning key — and the only place ProofBook writes
+		*into* a file the designer owns. What the bytes become is entirely the
+		core's (ADR-0003); this reads, asks, and writes.
+
+		A commit that finds the file gone **drops the draft and says so**,
+		rather than recreating a proof-page the designer deleted with nothing
+		in it but a note. So does one that finds a header nobody understands:
+		bytes ProofBook could not read are never overwritten, not even to save
+		a note that was typed before they changed.
+
+		Like `_read_page`, this read is inline and on the main thread and is
+		not yet routed — issue #25 is where both go through the worker.
+		"""
+		if self.notePath is None or not self.noteEditable:
+			return
+		draft = self._note_draft()
+		if draft == self.noteOriginal:
+			# Nothing was typed. A commit is not a reason to touch a file, and
+			# every window switch is a commit.
+			return
+		if self.committingNote:
+			# An alert takes the key window away, which is itself a commit
+			# point: without this, a commit that has to complain complains
+			# about the same file from inside its own complaint.
+			return
+		self.committingNote = True
+		try:
+			self._write_note(draft)
+		finally:
+			self.committingNote = False
+
+	@objc.python_method
+	def _write_note(self, draft):
+		"""The commit itself, once there is something to write."""
+		filepath = self._page_path(self.notePath)
+		try:
+			with open(filepath, "rb") as handle:
+				source = handle.read()
+		except FileNotFoundError:
+			self._drop_draft(
+				"“%s” is gone, so the note was not saved."
+				% os.path.basename(filepath)
+			)
+			return
+		except OSError as error:
+			self._alert(
+				"Could not read “%s”, so the note was not saved: %s"
+				% (os.path.basename(filepath), error)
+			)
+			return
+		data = frontmatter.write(source, draft)
+		if data is None:
+			self._drop_draft(
+				"The header of “%s” is no longer readable, so the note was "
+				"not saved. Fix it in a text editor."
+				% os.path.basename(filepath)
+			)
+			return
+		if data == source:
+			# The draft only differed from what the file says by the
+			# normalising the writer would have done anyway.
+			self.noteOriginal = draft
+			return
+		if self._replace(filepath, data):
+			self.noteOriginal = draft
+
+	@objc.python_method
+	def _replace(self, filepath, data):
+		"""Put these bytes in that file, or leave the file exactly as it was.
+
+		The bytes after the header are the designer's proof text, and a
+		truncating write that fails partway — a full disk, a volume that went
+		away mid-save — takes them with it. So the new file is written beside
+		the old one and swapped in. `replaceItemAtURL:` is the swap Cocoa's
+		own document saving uses: it is atomic, and it carries the original's
+		metadata across rather than handing back a proof-page that has lost
+		its Finder tags to a note edit.
+		"""
+		folder, filename = os.path.split(filepath)
+		temporary = os.path.join(
+			folder, NOTE_TEMP_PREFIX + filename + NOTE_TEMP_SUFFIX
+		)
+		manager = NSFileManager.defaultManager()
+		try:
+			with open(temporary, "wb") as handle:
+				handle.write(data)
+		except OSError as error:
+			self._alert("Could not save the note: %s" % error)
+			return False
+		# Two out parameters, so PyObjC answers with a tuple; the flag is
+		# first and the error last however many it decides to hand back.
+		result = manager.replaceItemAtURL_withItemAtURL_backupItemName_options_resultingItemURL_error_(
+			NSURL.fileURLWithPath_(filepath),
+			NSURL.fileURLWithPath_(temporary),
+			None,
+			0,
+			None,
+			None,
+		)
+		if result[0]:
+			return True
+		error = result[-1]
+		manager.removeItemAtPath_error_(temporary, None)
+		self._alert(
+			"Could not save the note into “%s”: %s"
+			% (filename, error.localizedDescription() if error else "unknown error")
+		)
+		return False
+
+	@objc.python_method
+	def _drop_draft(self, message):
+		"""Empty the pane, then say why.
+
+		In that order: the alert takes the key window away, and a draft still
+		sitting in the pane when that happens is a note that tries to commit
+		itself again from inside the complaint about the last attempt.
+
+		Dropped rather than kept, because a draft held for a file that is gone
+		is a note waiting to be written into whatever takes that name next.
+		"""
+		self._show_note(None, None)
+		self._alert(message)
 
 	@objc.python_method
 	def _proofbook_tab(self, font):
@@ -1345,6 +1740,11 @@ class ProofBookPalette(PalettePlugin):
 		# deleting a file must not blank a tab that may still be being read
 		# (spec §6). An external rename reads as a delete plus an add.
 		self.selectedPath = tree.selection_after(self.selectedPath, self.entries)
+		if self.selectedPath is None and self.notePath is not None:
+			# The page left the listing, so its note left with it: clear the
+			# selection, empty the note pane, and leave the Edit view exactly
+			# as it is (spec §6).
+			self._show_note(None, None)
 		self._refresh_page()
 		self._draw()
 
@@ -1380,6 +1780,8 @@ class ProofBookPalette(PalettePlugin):
 			group.explanation.show(False)
 			group.createButton.show(False)
 			group.tree.show(True)
+			group.noteHeader.show(True)
+			self._layout_note()
 			self._draw_tree()
 			return
 		# Neither empty state has a tree, a coverage bar or a context menu:
@@ -1388,6 +1790,8 @@ class ProofBookPalette(PalettePlugin):
 		group.tree.show(False)
 		group.coverage.show(False)
 		group.coverageCaption.show(False)
+		group.noteHeader.show(False)
+		group.noteEditor.show(False)
 		self.rows = []
 		group.title.set(state.title)
 		group.title.show(True)

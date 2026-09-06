@@ -70,6 +70,19 @@ PER_WINDOW_STATE = {
 	"selectedPath",
 	"proofTab",
 	"pushed",
+	"notePath",
+	"noteOriginal",
+	"noteEditable",
+}
+
+# The three moments a note reaches disk (spec §6). No save button, and
+# above all no per-keystroke write: the note pane commits on blur, on
+# selection change, and on the window resigning key — the last so that a
+# draft is on disk before the become-key refresh reads the file back.
+NOTE_COMMIT_POINTS = {
+	"noteEditingEnded_",
+	"treeSelectionChanged",
+	"windowResignedKey_",
 }
 
 # The palette's height range, set where the SDK reads it from.
@@ -842,6 +855,155 @@ class AdapterRules(unittest.TestCase):
 					"self._markerRect",
 					pysource.called_names(pysource.function(self.adapter, name)),
 				)
+
+	# -- The note pane (issue #21) ----------------------------------------
+
+	def test_the_note_pane_commits_on_blur_selection_change_and_resign_key(self):
+		# Three moments, and no save button. Resign-key is the load-bearing
+		# one: it puts the draft on disk before the become-key refresh reads
+		# the file back, so a refresh can never clobber an uncommitted note.
+		self.assertEqual(
+			pysource.functions_calling(self.adapter, "self._commit_note"),
+			NOTE_COMMIT_POINTS,
+			"a note reaches disk somewhere spec §6 does not name, or does "
+			"not reach it somewhere it does",
+		)
+
+	def test_no_note_is_written_on_a_keystroke(self):
+		# A commit is a read, a rewrite and a write of the whole file. Doing
+		# that per keystroke would put the disk between the designer and
+		# their own typing.
+		commit = pysource.function(self.adapter, "_commit_note")
+		self.assertIsNotNone(commit, "nothing commits the note")
+		self.assertNotIn(
+			"callback",
+			pysource.keyword_argument_names(
+				pysource.function(self.adapter, "_note_pane")
+			),
+			"a callback on the text editor fires on every keystroke",
+		)
+
+	def test_the_adapter_observes_the_two_notifications_it_commits_on(self):
+		start = pysource.function(self.adapter, "start")
+		referenced = pysource.referenced_names(start)
+		for name in ("NSTextDidEndEditingNotification", "NSWindowDidResignKeyNotification"):
+			with self.subTest(notification=name):
+				self.assertIn(
+					name,
+					referenced,
+					"%s is never observed, so a commit point is unreachable"
+					% name,
+				)
+
+	def test_the_header_the_note_lands_in_is_written_by_the_core(self):
+		# ADR-0003's canonical form, the unknown keys and the line endings are
+		# all string work, and ADR-0005 puts string work where a test can run
+		# it. The adapter reads bytes and writes bytes.
+		write = pysource.function(self.adapter, "_write_note")
+		self.assertIsNotNone(write, "nothing writes the note")
+		self.assertIn("frontmatter.write", pysource.called_names(write))
+
+	def test_a_commit_against_a_vanished_file_drops_the_draft(self):
+		# Recreating the file would resurrect a proof-page the designer
+		# deleted, with only the note in it (spec §6).
+		write = pysource.function(self.adapter, "_write_note")
+		self.assertIn("FileNotFoundError", pysource.referenced_names(write))
+		self.assertIn(
+			"self._drop_draft",
+			pysource.called_names(write),
+			"a draft with nowhere to go is kept, and will be written into "
+			"whatever file takes that name next",
+		)
+		self.assertIn(
+			"self._alert",
+			pysource.called_names(pysource.function(self.adapter, "_drop_draft")),
+			"a note that was not saved must say so; silence reads as saved",
+		)
+
+	def test_a_proof_page_is_never_left_half_written(self):
+		# The note is the first thing ProofBook writes *into* a file the
+		# designer owns, and the bytes after the header are their proof text.
+		# A truncating write that fails takes it with it.
+		replace = pysource.function(self.adapter, "_replace")
+		self.assertIsNotNone(replace, "the proof-page is written in place")
+		self.assertIn(
+			"NSFileManager.defaultManager",
+			pysource.called_names(replace),
+			"the new bytes are written straight over the proof-page rather "
+			"than swapped in beside it",
+		)
+		self.assertIn(
+			"self._replace",
+			pysource.called_names(pysource.function(self.adapter, "_write_note")),
+			"the commit writes the proof-page itself, bypassing the swap",
+		)
+
+	def test_a_malformed_header_is_shown_read_only_and_never_written(self):
+		shown = pysource.function(self.adapter, "_show_note")
+		self.assertIsNotNone(shown, "nothing puts a note in the pane")
+		self.assertIn(
+			"frontmatter.shown",
+			pysource.called_names(shown),
+			"what the pane shows for a broken header is a rule, and rules "
+			"live in the core",
+		)
+		self.assertTrue(
+			pysource.attribute_reads(
+				pysource.function(self.adapter, "_commit_note"), "self.noteEditable"
+			),
+			"a read-only pane commits anyway, which rewrites a header "
+			"ProofBook never understood",
+		)
+
+	def test_the_pane_is_emptied_when_the_selected_page_goes(self):
+		# "Clear the selection, empty the note pane, and leave the Edit view
+		# exactly as it is" (spec §6).
+		resolve = pysource.function(self.adapter, "_resolve")
+		self.assertIn("self._show_note", pysource.called_names(resolve))
+
+	def test_a_refresh_does_not_eat_an_uncommitted_draft(self):
+		# Resign-key should have committed it already; this is the guard for
+		# every way it might not have.
+		refresh = pysource.function(self.adapter, "_refresh_note")
+		self.assertIsNotNone(refresh)
+		self.assertTrue(
+			pysource.attribute_reads(refresh, "self.noteOriginal"),
+			"the pane is re-set from disk without asking whether the "
+			"designer had typed something into it",
+		)
+
+	def test_the_collapsed_state_is_remembered_and_not_keyed_off_the_name(self):
+		# The same trap as the palette height: `self.name` is localised, so a
+		# designer switching Glyphs to German would silently start again.
+		key = pysource.module_constant(self.adapter, "NOTE_COLLAPSED_KEY")
+		self.assertIsInstance(key, str)
+		self.assertIn("ProofBook", key)
+		toggle = pysource.function(self.adapter, "_toggle_note_pane")
+		self.assertIsNotNone(toggle, "the note pane does not collapse")
+		self.assertTrue(pysource.attribute_reads(toggle, "Glyphs.defaults"))
+
+	def test_collapsing_the_pane_does_not_change_the_palettes_height(self):
+		# "Collapsing the note pane changes what is visible, not the
+		# palette's height" (spec §4): the tree takes the space instead.
+		toggle = pysource.function(self.adapter, "_toggle_note_pane")
+		for attribute in ("min", "max"):
+			with self.subTest(attribute=attribute):
+				self.assertEqual(
+					pysource.attribute_assignment_lines(toggle, attribute),
+					[],
+					"collapsing the pane resizes the palette",
+				)
+		layout = pysource.function(self.adapter, "_layout_note")
+		self.assertIsNotNone(layout)
+		self.assertTrue(
+			[
+				name
+				for name in pysource.called_names(layout)
+				if name.endswith(".setPosSize")
+			],
+			"nothing is re-laid-out, so the pane collapses over the tree "
+			"rather than giving it the space",
+		)
 
 	def test_nothing_built_at_load_time_touches_the_filesystem(self):
 		for name in LOAD_TIME_METHODS:
