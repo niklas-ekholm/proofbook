@@ -121,6 +121,21 @@ def class_bases(tree, name):
 	return None
 
 
+def class_attributes(tree):
+	"""Names bound directly in a class body — one object per class, not one
+	per instance."""
+	names = set()
+	for node in ast.walk(tree):
+		if not isinstance(node, ast.ClassDef):
+			continue
+		for statement in node.body:
+			targets = statement.targets if isinstance(statement, ast.Assign) else []
+			names.update(
+				target.id for target in targets if isinstance(target, ast.Name)
+			)
+	return names
+
+
 def called_names(node):
 	"""Every dotted callee name under `node`, bare `open(...)` included."""
 	names = set()

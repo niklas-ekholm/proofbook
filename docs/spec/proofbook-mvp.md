@@ -182,7 +182,7 @@ Selecting a proof-page strips the frontmatter and pushes the remaining text into
 
 **What ProofBook remembers is what it reads back, not what it wrote.** The Edit view stores glyphs, not characters, so `tab.text` need not return the string assigned to it: an unencoded glyph comes back as `/name`, and a trailing newline may not survive. Re-read `tab.text` after the push and keep *that* as the token. A token that can never match disowns the tab on every selection, which is a new tab per click, silently.
 
-*(**Unverified**: whether `tab.text` round-trips a pushed string unchanged has not been measured. It is the first thing to check when building the refresh, and if it does not hold in some case the token has to be whatever comparison does — never an assumption that it matched.)*
+Keeping the read-back value is what makes the round trip stop mattering: ProofBook compares the tab against what the tab last said, so a push that comes back as `/adieresis` or loses its trailing newline still matches itself. *(**Unverified in Glyphs**, and now the only two assumptions left here. One: that the read-back is **synchronous** — the token is read on the same runloop turn as the write, and a tab that had not taken the assignment yet would hand back the previous page's text, leaving a token that matches something no longer on screen. Two: that `tab.text` is **stable** across reads of a tab nobody has touched. Nothing here assumes the round trip is the identity, but a token is worthless if it cannot match itself; if either fails, the token has to be whatever comparison does hold, never an assumption that it matched.)*
 
 ---
 
@@ -198,7 +198,7 @@ State is per-palette-instance and in-memory: selection, expansion, scroll positi
 
 ### On refresh
 
-- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there** — the same test §5 makes before replacing a tab. If the designer has typed in that tab, the text is theirs; leave it, and stop treating the tab as ProofBook's.
+- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there** — the same test §5 makes before replacing a tab. If the designer has typed in that tab, the text is theirs; leave it. Nothing has to be *un*remembered for that: the question is asked afresh every time rather than latched, so a tab holding the designer's text fails it here and on the next selection too — and text they restore to exactly what was pushed is ProofBook's again, which latching would have thrown away. **The question is also asked before the page is read**, not after: this runs on every become-key and after every rename, and the read is the main-thread one ADR-0004 is about, so a tab that is not ProofBook's must cost no download to rule out. A refresh writes into that tab wherever it sits in the tab bar, and **never opens one**: unlike a selection, it answers no question the designer just asked, and a proof-page arriving in front of someone who is not in Glyphs is not a refresh. Unchanged is left alone too — a re-push is a redraw, and this runs on every switch back to the window.
 - **The selected page is gone**: clear the selection, empty the note pane, and **leave the Edit view tab exactly as it is.** Deleting a file should not blank a tab that may still be being read. An external rename reads as a delete plus an add; the MVP makes no attempt to track identity across a rename it did not perform.
 
 ### Note writes

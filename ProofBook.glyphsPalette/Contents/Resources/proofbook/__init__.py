@@ -8,7 +8,8 @@ suite in `tests/` run under plain `python3`, with no Glyphs and no install.
 `discovery` resolves the proof-book folder and names the empty states;
 `intents` holds the verbs the adapter performs; `names` is the filename
 grammar; `tree` flattens a listing into the rows the palette draws; `ops`
-plans the writes and settles the one collision rule they all obey. The
+plans the writes and settles the one collision rule they all obey; `edit`
+answers whether the Edit view tab is still ProofBook's to write to. The
 frontmatter header lands on top of the same seam.
 """
 

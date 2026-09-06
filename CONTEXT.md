@@ -29,7 +29,7 @@ Glyphs' text-editing tab, where a selected proof-page's content is displayed.
 _Avoid_: editor window, canvas, edit tab
 
 **ProofBook tab**:
-The Edit view tab ProofBook opened to display a proof-page. Selecting a proof-page reuses this tab; a tab the designer opened themselves is never written to.
+The Edit view tab ProofBook opened to display a proof-page. Selecting a proof-page reuses this tab — but only while it still holds exactly what ProofBook pushed there. A tab the designer opened themselves is never written to, and neither is one ProofBook opened that they have since typed into: a tab stops being the ProofBook tab the moment its text is the designer's.
 _Avoid_: our tab, the plugin tab, proof tab
 
 **coverage**:
