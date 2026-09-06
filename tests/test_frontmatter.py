@@ -342,6 +342,26 @@ class Normalising(unittest.TestCase):
 		written = frontmatter.write(page("---", "Note: Caps.", "---"), "Caps.")
 		self.assertEqual(written, page("---", "note: |", "  Caps.", "---"))
 
+	def test_a_note_reads_back_exactly_as_it_was_written(self):
+		# The reader strips the indent a block shares, and cannot tell the
+		# designer's own from the block's. So the writer takes the shared
+		# indent off first: what is written is what the next read returns,
+		# and the shape inside the note survives either way.
+		for note, expected in [
+			("  indented", "indented"),
+			("\tCaps.\n\tBold.", "Caps.\nBold."),
+			("  Caps.\n    Bold.", "Caps.\n  Bold."),
+			("Caps.\n  Bold.", "Caps.\n  Bold."),
+		]:
+			with self.subTest(note=note):
+				written = frontmatter.write(page("caps"), note)
+				self.assertEqual(frontmatter.read(written).note, expected)
+				self.assertEqual(
+					frontmatter.write(written, expected),
+					written,
+					"a second save of the note it just read moves the file",
+				)
+
 	def test_blank_lines_around_the_note_are_trimmed(self):
 		written = frontmatter.write(page("caps"), "\n\nCaps.\n  \n")
 		self.assertEqual(written, page("---", "note: |", "  Caps.", "---", "caps"))

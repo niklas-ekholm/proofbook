@@ -149,8 +149,18 @@ def _normalised(note):
 	"""The note as it will be written, or None if there is no note left in it.
 
 	The same shape reading produces, so that what comes back off disk is what
-	went in: blank lines trimmed off both ends, and a line of nothing but
-	whitespace written as blank, because that is how it reads back.
+	went in: blank lines trimmed off both ends, a line of nothing but
+	whitespace written as blank, and the indent every line shares taken off
+	the front — all three because that is how it reads back.
+
+	The last is the one with a cost. A note whose every line begins with the
+	same whitespace loses it, once, on the save: the block is written at the
+	canonical two spaces and read back by stripping the common prefix, which
+	cannot tell the designer's indent from the block's own. Doing it here
+	rather than leaving it to the reader is what makes the pane, the file and
+	the next read agree — a note that quietly reads back differently from how
+	it was written is the worse of the two, and the shape *inside* the note,
+	which is what a list or an indented aside is made of, survives either way.
 	"""
 	if note is None:
 		return None
@@ -160,7 +170,10 @@ def _normalised(note):
 		lines.pop(0)
 	while lines and not lines[-1]:
 		lines.pop()
-	return "\n".join(lines) if lines else None
+	if not lines:
+		return None
+	indent = min(len(line) - len(line.lstrip()) for line in lines if line)
+	return "\n".join(line[indent:] for line in lines)
 
 
 def _dominant_ending(text):
