@@ -1,5 +1,17 @@
 # ProofBook never reads files on the main thread
 
+> **Status: specified, not implemented.** The invariant below stands as the
+> design and nothing here is retracted, but the work that enforces it — the
+> `SF_DATALESS` routing and the worker thread — was postponed indefinitely on
+> 2026-09-06 (issue #25, closed as not planned). Until it lands, ProofBook
+> reads a proof-page inline on the main thread without asking whether it is
+> materialised, so selecting a page a cloud provider is holding as a
+> placeholder blocks Glyphs until it downloads, and there is no bulk download.
+> What still holds unchanged is the half ADR-0001 paid for: the tree reads no
+> file contents at all, so a fully-dataless proof-book renders instantly, and
+> tagging — a rename — works offline. This is a known limitation of the MVP,
+> not a change of mind about the invariant.
+
 A proof-book often lives in Dropbox, Google Drive or iCloud Drive, where files are **dataless placeholders**: reading one triggers a synchronous download that blocks for seconds, or fails offline. ProofBook therefore holds one invariant: **the tree reads no file contents at all**, and **no file read ever happens on the main thread**. The tree is built from a directory listing and the filename grammar alone; every read of file contents goes through a background worker thread.
 
 This is not speculative. While standing up the plugin skeleton (issue #6), Glyphs itself blocked for over three minutes at 0% CPU, unresponsive and with no progress indication, doing exactly this class of work: recursively reading 461 Google Drive scripts serially on the main thread at startup.

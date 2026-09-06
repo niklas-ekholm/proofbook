@@ -209,6 +209,13 @@ The note pane has no save button. It commits **on blur, on selection change, and
 
 ## 7. Cloud storage (ADR-0004)
 
+> **Postponed indefinitely (2026-09-06).** This section specifies behaviour the
+> MVP does not have: issue #25, which builds the routing and the worker, was
+> closed as not planned. Reads are currently inline and on the main thread, and
+> selecting a placeholder blocks Glyphs until it downloads. The filename-only
+> tree and offline tagging described below are real today; the hint line, the
+> bulk download and the flag-routed selection are not.
+
 **The tree reads no file contents at all, and no file read ever happens on the main thread.** This is an invariant, stated because it is free today and expensive to retrofit.
 
 - Placeholders carry the **`SF_DATALESS`** flag (`0x40000000`) in `os.lstat().st_flags`. Statting does not trigger a download (3011 Google Drive files in 0.2s). Plain Python — no PyObjC, no per-provider code.
