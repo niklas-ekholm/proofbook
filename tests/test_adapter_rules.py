@@ -837,9 +837,16 @@ class AdapterRules(unittest.TestCase):
 		# raises TypeError — so a cell holding the palette would be a retain
 		# cycle, and the callbacks `__del__` removes would outlive the window
 		# and crash Glyphs. The route back is the one vanilla already uses.
-		callback = pysource.function(self.adapter, "_tagCallback")
-		self.assertIsNotNone(callback)
-		self.assertIn("view.vanillaWrapper", pysource.called_names(callback))
+		walk = pysource.function(self.adapter, "_wrapper_callback")
+		self.assertIsNotNone(walk, "nothing walks back to the wrapper")
+		self.assertIn("view.vanillaWrapper", pysource.called_names(walk))
+		for name in ("_tagCallback", "_toggleCallback"):
+			with self.subTest(view=name):
+				self.assertIn(
+					"_wrapper_callback",
+					pysource.called_names(pysource.function(self.adapter, name)),
+					"%s finds the palette some other way" % name,
+				)
 		self.assertNotIn(
 			"weakref", pysource.imported_roots(self.adapter),
 			"weakref cannot hold a PyObjC object; do not reach for it",
@@ -886,7 +893,10 @@ class AdapterRules(unittest.TestCase):
 	def test_the_adapter_observes_the_two_notifications_it_commits_on(self):
 		start = pysource.function(self.adapter, "start")
 		referenced = pysource.referenced_names(start)
-		for name in ("NSTextDidEndEditingNotification", "NSWindowDidResignKeyNotification"):
+		for name in (
+			"NSTextDidEndEditingNotification",
+			"NSWindowDidResignKeyNotification",
+		):
 			with self.subTest(notification=name):
 				self.assertIn(
 					name,
@@ -960,6 +970,13 @@ class AdapterRules(unittest.TestCase):
 		# exactly as it is" (spec §6).
 		resolve = pysource.function(self.adapter, "_resolve")
 		self.assertIn("self._show_note", pysource.called_names(resolve))
+
+	def test_the_pane_empties_when_the_selection_is_cleared(self):
+		# Not only when the page vanishes: a click into the empty space below
+		# the rows deselects, and a pane still holding the last page's note
+		# is a note one blur away from being written into it.
+		selection = pysource.function(self.adapter, "treeSelectionChanged")
+		self.assertIn("self._show_note", pysource.called_names(selection))
 
 	def test_a_refresh_does_not_eat_an_uncommitted_draft(self):
 		# Resign-key should have committed it already; this is the guard for

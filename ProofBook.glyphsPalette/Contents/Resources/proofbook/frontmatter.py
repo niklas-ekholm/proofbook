@@ -22,6 +22,11 @@ block is always last; an emptied note takes the header with it unless those
 keys remain. The proof text is passed through untouched, and the header is
 written in the file's own dominant line ending, so a note edit produces a diff
 confined to the header rather than a whole-file rewrite.
+
+`shown` is the last decision in the note's path and the reason this module
+knows the pane exists at all: what a document *displays* — the note, or a
+broken header nobody may type into — is a rule, and ADR-0005 keeps rules on
+the side of the seam a test can reach.
 """
 
 from collections import namedtuple
@@ -90,9 +95,11 @@ def shown(document):
 	"""What the note pane displays for this page, and whether it is editable.
 
 	A header ProofBook could not read makes the pane read-only and puts the
-	broken header in it. Hiding it instead would leave a designer whose note
-	has vanished from the pane with nowhere to find out why (spec §9), and
-	showing it editable would offer to rewrite bytes nobody understood.
+	broken header in it (spec §3). Hiding it instead would leave a designer
+	whose note has vanished from the pane with nowhere to find out why — the
+	disabled *Edit note* item spec §9 describes says why it is unreadable,
+	and this is where they see it — and showing it editable would offer to
+	rewrite bytes nobody understood.
 
 	Here rather than in the adapter because it is the last decision in the
 	note's path and the only one a test can reach: what the pane does with a
@@ -119,12 +126,14 @@ def write(data, note):
 	if document.malformed:
 		return None
 
-	ending = _dominant_ending(_decode(data)[0])
+	ending = _dominant_ending(data)
 	lines = list(document.unknown) + _note_lines(note)
-	if not lines:
+	if not any(line.strip() for line in lines):
 		# An emptied note with nothing else in the header takes the header
 		# with it, fences included: a file ProofBook has nothing to say about
-		# should look like one nobody ever wrote a header into.
+		# should look like one nobody ever wrote a header into. Blank lines
+		# do not count as something else — they are the header's own spacing,
+		# and fences around nothing but them is a header still there.
 		return document.text.encode("utf-8")
 	header = FENCE + ending + "".join(line + ending for line in lines)
 	return (header + FENCE + ending + document.text).encode("utf-8")
@@ -176,15 +185,19 @@ def _normalised(note):
 	return "\n".join(line[indent:] for line in lines)
 
 
-def _dominant_ending(text):
+def _dominant_ending(data):
 	"""The line ending most of the file already uses (spec §3).
 
 	Counted rather than sniffed off the first line: the header is written in
 	whichever ending the file mostly has, so a note edit does not quietly
 	convert a file, and a lone stray line does not decide for the rest.
+
+	Counted on the bytes, which need no decoding to answer this: `\r` and
+	`\n` are themselves in UTF-8 and cannot appear inside any other
+	character, so the count is the same either way.
 	"""
-	crlf = text.count("\r\n")
-	return "\r\n" if crlf > text.count("\n") - crlf else DEFAULT_ENDING
+	crlf = data.count(b"\r\n")
+	return "\r\n" if crlf > data.count(b"\n") - crlf else DEFAULT_ENDING
 
 
 def _decode(data):

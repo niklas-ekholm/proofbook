@@ -330,7 +330,9 @@ class Normalising(unittest.TestCase):
 	"""Lenient in, canonical out — on the next write, not on read."""
 
 	def test_a_one_line_note_normalises_to_a_block(self):
-		written = frontmatter.write(page("---", "note: Caps.", "---", "caps"), "Caps.")
+		written = frontmatter.write(
+			page("---", "note: Caps.", "---", "caps"), "Caps."
+		)
 		self.assertEqual(written, page("---", "note: |", "  Caps.", "---", "caps"))
 
 	def test_an_odd_indent_normalises_to_two_spaces(self):
@@ -404,7 +406,10 @@ class EmptyingANote(unittest.TestCase):
 		)
 
 	def test_a_note_of_nothing_but_whitespace_is_an_emptied_note(self):
-		self.assertEqual(frontmatter.write(CANONICAL, "  \n\n"), page("HAMBURGEFONSTIV", "handgloves"))
+		self.assertEqual(
+			frontmatter.write(CANONICAL, "  \n\n"),
+			page("HAMBURGEFONSTIV", "handgloves"),
+		)
 
 	def test_no_note_at_all_empties_it_too(self):
 		self.assertEqual(
@@ -417,6 +422,12 @@ class EmptyingANote(unittest.TestCase):
 			frontmatter.write(source, ""),
 			page("---", "seen: 2026-09-01", "---", "caps"),
 		)
+
+	def test_a_header_of_blank_lines_around_the_note_goes_too(self):
+		# A blank line is the header's own spacing, not a key somebody else
+		# wrote: fences around nothing but whitespace is a header still there.
+		source = page("---", "", "note: |", "  Caps.", "", "---", "caps")
+		self.assertEqual(frontmatter.write(source, ""), page("caps"))
 
 	def test_emptying_a_note_that_was_never_there_changes_nothing(self):
 		source = page("HAMBURGEFONSTIV", "handgloves")
@@ -438,15 +449,21 @@ class BytesTheWriterMustNotTouch(unittest.TestCase):
 		self.assertTrue(written.endswith(b"caps"))
 
 	def test_the_dominant_line_ending_is_the_one_the_header_is_written_in(self):
-		written = frontmatter.write(b"---\r\nnote: old\r\n---\r\ncaps\r\n", "New.")
-		self.assertEqual(written, b"---\r\nnote: |\r\n  New.\r\n---\r\ncaps\r\n")
+		written = frontmatter.write(
+			b"---\r\nnote: old\r\n---\r\ncaps\r\n", "New."
+		)
+		self.assertEqual(
+			written, b"---\r\nnote: |\r\n  New.\r\n---\r\ncaps\r\n"
+		)
 
 	def test_a_stray_crlf_does_not_make_a_unix_file_dos(self):
 		written = frontmatter.write(b"caps\r\nhandgloves\ncaps\n", "New.")
 		self.assertTrue(written.startswith(b"---\nnote: |\n  New.\n---\n"))
 
 	def test_a_bom_is_dropped_on_write(self):
-		written = frontmatter.write("\ufeff---\nnote: old\n---\ncaps\n".encode("utf-8"), "New.")
+		written = frontmatter.write(
+			"\ufeff---\nnote: old\n---\ncaps\n".encode("utf-8"), "New."
+		)
 		self.assertEqual(written, page("---", "note: |", "  New.", "---", "caps"))
 
 	def test_only_the_header_differs_after_a_note_edit(self):
@@ -466,7 +483,9 @@ class WhatIsNotOursToWrite(unittest.TestCase):
 		)
 
 	def test_bytes_that_are_not_utf_8_are_never_rewritten(self):
-		self.assertIsNone(frontmatter.write(b"---\nnote: hi\n---\nHAMB\xffRGE\n", "New."))
+		self.assertIsNone(
+			frontmatter.write(b"---\nnote: hi\n---\nHAMB\xffRGE\n", "New.")
+		)
 
 	def test_a_header_with_two_notes_is_never_rewritten(self):
 		self.assertIsNone(

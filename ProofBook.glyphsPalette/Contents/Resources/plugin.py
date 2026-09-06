@@ -217,7 +217,7 @@ TREE_TOP = COVERAGE_CAPTION_TOP + COVERAGE_CAPTION_HEIGHT + 2
 # word `Note` and a caret, and the editor it collapses. Collapsing changes
 # what is visible and not the palette's height, so the tree takes back
 # exactly the space the editor gives up.
-NOTE_LABEL = "Note"
+NOTE_CAPTION = "Note"
 NOTE_HEADER_HEIGHT = 18
 # Four lines of note and the air around them. Deliberately small: the tree is
 # what the palette is for, and at the minimum palette height every point the
@@ -396,6 +396,26 @@ def _draw_chevron(rect, expanded, color):
 	)
 
 
+def _wrapper_callback(view, name):
+	"""A palette callback stamped on a vanilla wrapper, found from a view.
+
+	A view built by List2 — or one sitting inside a Group — is never told
+	which palette it belongs to, and cannot be: a PyObjC object cannot be
+	weakly referenced, so a view holding the palette would be a retain cycle,
+	and the callbacks `__del__` removes would outlive the window and crash
+	Glyphs. The route back is the one vanilla already uses, up the hierarchy
+	to the nearest wrapper, holding a bound method exactly as the selection
+	and button callbacks vanilla itself holds.
+	"""
+	while view is not None:
+		if view.respondsToSelector_("vanillaWrapper"):
+			callback = getattr(view.vanillaWrapper(), name, None)
+			if callback is not None:
+				return callback
+		view = view.superview()
+	return None
+
+
 def _capsule(rect):
 	radius = rect.size.height / 2.0
 	return NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
@@ -507,23 +527,13 @@ class ProofBookRowView(NSView):
 
 	@objc.python_method
 	def _tagCallback(self):
-		"""The palette's tag handler, found the way vanilla finds a wrapper.
+		"""The palette's tag handler, stamped on the tree the palette built.
 
-		A cell view is built by List2 and never told which palette it belongs
-		to, so the route back is up the view hierarchy to the table, whose
-		`vanillaWrapper` is the tree the palette built and stamped. Held as a
-		bound method rather than as the palette, exactly like the selection
-		and button callbacks vanilla is already holding.
+		Started at the superview rather than at the cell: the wrapper being
+		looked for is the table's, and a cell view is a vanilla wrapper of
+		its own that would answer first.
 		"""
-		view = self.superview()
-		while view is not None:
-			if view.respondsToSelector_("vanillaWrapper"):
-				wrapper = view.vanillaWrapper()
-				callback = getattr(wrapper, "proofbookTagCallback", None)
-				if callback is not None:
-					return callback
-			view = view.superview()
-		return None
+		return _wrapper_callback(self.superview(), "proofbookTagCallback")
 
 	@objc.python_method
 	def _drawDisclosure(self, marker, expanded, emphasized):
@@ -693,7 +703,7 @@ class ProofBookNotePaneView(NSView):
 		left = marker.origin.x + MARKER_WIDTH
 		_draw_centered(
 			_attributed(
-				NOTE_LABEL, NSFont.systemFontOfSize_(NOTE_FONT_SIZE), color
+				NOTE_CAPTION, NSFont.systemFontOfSize_(NOTE_FONT_SIZE), color
 			),
 			NSMakeRect(left, 0, bounds.size.width - left, bounds.size.height),
 		)
@@ -713,21 +723,12 @@ class ProofBookNotePaneView(NSView):
 
 	@objc.python_method
 	def _toggleCallback(self):
-		"""The palette's toggle, found the way vanilla finds a wrapper.
+		"""The palette's toggle, stamped on this strip's own wrapper.
 
-		The same route the tree rows take, and for the same reason: a view
-		holding the palette would be a retain cycle PyObjC cannot break, and
-		the callbacks `__del__` removes would outlive the window.
+		Started at the view itself, unlike a tree row's: this view *is* the
+		wrapper's, and the palette stamped the toggle straight onto it.
 		"""
-		view = self
-		while view is not None:
-			if view.respondsToSelector_("vanillaWrapper"):
-				wrapper = view.vanillaWrapper()
-				callback = getattr(wrapper, "proofbookToggleCallback", None)
-				if callback is not None:
-					return callback
-			view = view.superview()
-		return None
+		return _wrapper_callback(self, "proofbookToggleCallback")
 
 
 # Scroll chaining. Glyphs' palette sidebar scrolls, and ProofBook sits in
@@ -1183,16 +1184,12 @@ class ProofBookPalette(PalettePlugin):
 	# -- Glyphs and AppKit callbacks -------------------------------------
 
 	def windowBecameKey_(self, notification):
-		# `!=`, not `is not`: two PyObjC proxies for one window are two
-		# objects, and getting this wrong would wedge the palette blank.
-		if notification.object() != self._window():
+		if not self._is_my_window(notification):
 			return
 		self._resolve()
 
 	def windowResignedKey_(self, notification):
-		# `!=`, not `is not`: two PyObjC proxies for one window are two
-		# objects, and getting this wrong would commit every window's draft.
-		if notification.object() != self._window():
+		if not self._is_my_window(notification):
 			return
 		self._commit_note()
 
@@ -1255,6 +1252,10 @@ class ProofBookPalette(PalettePlugin):
 		indexes = sender.getSelectedIndexes()
 		if not indexes:
 			self.selectedPath = None
+			# The pane empties with the selection. A pane still holding the
+			# last page's note, still editable, is a note one blur away from
+			# being written into a page nothing on screen names.
+			self._show_note(None, None)
 			return
 		row = self.rows[indexes[0]]
 		if not row.is_dir:
@@ -1369,14 +1370,17 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _read_page(self, path):
-		"""A proof-page read into its proof text and its note, or None if it did not read.
+		"""A proof-page read into its proof text and its note, or None.
 
-		This read is inline and on the main thread, and is **not yet routed**:
+		None means it did not read at all.
+
+		This read is inline and on the main thread, and is **not routed**:
 		ADR-0004 allows an inline read only for a file that is already
 		materialised, and nothing here asks. Reading a page that a cloud
 		provider is holding as a placeholder therefore blocks Glyphs until it
-		downloads. Issue #25 is where the `SF_DATALESS` check and the worker
-		thread land, and this is the read they route — both callers of it, the
+		downloads. The `SF_DATALESS` check and the worker thread that would
+		route it were postponed indefinitely — ADR-0004's own banner records
+		it — and this is the read they would take, both callers of it, the
 		selection and the refresh.
 		"""
 		filepath = self._page_path(path)
@@ -1538,7 +1542,8 @@ class ProofBookPalette(PalettePlugin):
 		a note that was typed before they changed.
 
 		Like `_read_page`, this read is inline and on the main thread and is
-		not yet routed — issue #25 is where both go through the worker.
+		not routed; ADR-0004's banner records why, and the write that follows
+		it is the same bet on a materialised file.
 		"""
 		if self.notePath is None or not self.noteEditable:
 			return
@@ -1677,6 +1682,16 @@ class ProofBookPalette(PalettePlugin):
 		return os.path.join(self.bookPath, *path.split(tree.PATH_SEPARATOR))
 
 	# -- Resolving the proof-book ----------------------------------------
+
+	@objc.python_method
+	def _is_my_window(self, notification):
+		"""Is this key-window notification about the window this palette is in?
+
+		`!=`, not `is not`: two PyObjC proxies for one window are two objects,
+		and getting this wrong would wedge the palette blank on the way in and
+		commit every other window's draft on the way out.
+		"""
+		return notification.object() == self._window()
 
 	@objc.python_method
 	def _window(self):
