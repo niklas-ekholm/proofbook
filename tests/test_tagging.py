@@ -9,7 +9,7 @@ import unittest
 
 import corepath  # noqa: F401  (puts the bundle's Resources dir on sys.path)
 
-from proofbook import tagging
+from proofbook import frontmatter, tagging, tree
 
 from test_frontmatter import page
 
@@ -60,6 +60,23 @@ class TheSwatch(unittest.TestCase):
 		# untaggable (ADR-0006).
 		self.assertIsNone(tagging.cycled(page("---", "status: wip", "caps")))
 
+
+
+class ThePrediction(unittest.TestCase):
+	"""What the row shows on the click, before a placeholder has downloaded."""
+
+	def test_it_is_the_same_step_the_bytes_take(self):
+		for before, after in ((None, "wip"), ("wip", "done"), ("done", None)):
+			with self.subTest(before=before):
+				known = tree.Known(before, "NE", False)
+				self.assertEqual(tagging.predicted(known), tree.Known(after, "NE", False))
+
+	def test_it_agrees_with_what_is_written(self):
+		source = page("---", "status: wip", "owner: NE", "---", "caps")
+		written = frontmatter.read(tagging.cycled(source)).header
+		self.assertEqual(
+			tagging.predicted(tree.Known("wip", "NE", False)).status, written.status
+		)
 
 if __name__ == "__main__":
 	unittest.main()

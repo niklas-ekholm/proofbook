@@ -669,7 +669,13 @@ class AdapterRules(unittest.TestCase):
 	def test_no_inline_read_can_reach_a_placeholder(self):
 		# ADR-0004: a placeholder read blocks until it downloads, and forever
 		# offline (#38). Every main-thread read asks the flag first.
-		for name in ("_read_page", "_display_page", "_retag", "_write_note"):
+		for name in (
+			"_read_page",
+			"_display_page",
+			"_retag",
+			"_retag_inline",
+			"_write_note",
+		):
 			with self.subTest(method=name):
 				called = pysource.called_names(pysource.function(self.adapter, name))
 				self.assertTrue(
@@ -899,6 +905,8 @@ class AdapterRules(unittest.TestCase):
 		tagging = pysource.function(self.adapter, "tagPage")
 		self.assertTrue(pysource.attribute_reads(tagging, "tagging.cycled"))
 		self.assertEqual(pysource.attribute_reads(tagging, "status.STATUSES"), [])
+		self.assertEqual(pysource.attribute_reads(tagging, "status.next_stored"), [])
+		self.assertTrue(pysource.attribute_reads(tagging, "tagging.predicted"))
 		inline = pysource.function(self.adapter, "_retag_inline")
 		self.assertIn(
 			"change",

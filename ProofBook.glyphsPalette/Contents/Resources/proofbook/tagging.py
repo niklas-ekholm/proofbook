@@ -26,3 +26,13 @@ def cycled(data):
 	return frontmatter.write(
 		data, header._replace(status=status.next_stored(header.status))
 	)
+
+
+def predicted(known):
+	"""What the row shows on the click, before the page's bytes are in hand.
+
+	The same step `cycled` takes on the header, taken on what the tree knows
+	— so a placeholder's optimistic row (#40) and the tag that lands after it
+	cannot disagree about which status comes next.
+	"""
+	return known._replace(status=status.next_stored(known.status))
