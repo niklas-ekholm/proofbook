@@ -397,6 +397,25 @@ class AdapterRules(unittest.TestCase):
 			"self._carry", pysource.called_names(pysource.function(self.adapter, "_rename"))
 		)
 
+	def test_a_bulk_re_tag_always_asks_first(self):
+		# Spec §8: the only action with no undo at all.
+		self.assertIn(
+			"self._confirm", pysource.called_names(pysource.function(self.adapter, "_bulk"))
+		)
+
+	def test_a_folder_holding_anything_asks_before_the_trash(self):
+		trash = pysource.function(self.adapter, "_trash")
+		called = pysource.called_names(trash)
+		self.assertIn("folders.trash_question", called)
+		self.assertIn("self._confirm", called)
+
+	def test_empty_space_and_the_footer_make_the_same_page(self):
+		# The footer's *+ New proof-page* is exactly the empty-space item:
+		# always the root (spec §8).
+		view = pysource.function(self.adapter, "_vanilla_view")
+		self.assertIn("FOOTER_BUTTON", pysource.referenced_names(view))
+		self.assertIn("self._new_page", pysource.called_names(view))
+
 	def test_the_menus_status_verb_is_the_swatchs_operation(self):
 		# #42: same read, same write, same download on a placeholder.
 		self.assertIn(

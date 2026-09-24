@@ -59,6 +59,22 @@ def typed_subject(text):
 	return unicodedata.normalize("NFC", subject), None
 
 
+def typed_folder(text):
+	"""`(name, None)` for a folder name a designer typed, or `(None, why not)`.
+
+	The same rules as a subject, with no extension to strip.
+	"""
+	name = text.strip()
+	if not name:
+		return None, "A folder needs a name."
+	if name.lower().endswith(EXTENSION):
+		return None, "A folder name cannot end in “%s”; it would read as a proof-page." % EXTENSION
+	subject, problem = typed_subject(name)
+	if subject is None:
+		return None, problem
+	return subject, None
+
+
 def display_subject(subject):
 	"""The subject as the palette draws it: hyphens rendered as spaces."""
 	return subject.replace(SEGMENT_SEPARATOR, " ")

@@ -54,14 +54,19 @@ def resolved(collision, save_new):
 	return Plan(collision.intent, None) if save_new else NOTHING_TO_DO
 
 
+def destination(intent):
+	"""Where an intent puts something: the name a collision dialog offers."""
+	return intent.path if isinstance(intent, intents.MakeDir) else intent.destination
+
+
 def rename(path, subject, entries):
 	"""*Rename…*: the page under a new subject, in the folder it is in."""
-	return move(path, _join(parent(path), names.filename(subject)), entries)
+	return move(path, join(parent(path), names.filename(subject)), entries)
 
 
 def move_into(path, folder, entries):
 	"""*Move to*: the page, under its own name, in another folder ("" the root)."""
-	return move(path, _join(folder, _split(path)[1]), entries)
+	return move(path, join(folder, _split(path)[1]), entries)
 
 
 def duplicate(path, entries):
@@ -75,14 +80,14 @@ def duplicate(path, entries):
 	"""
 	folder, filename = _split(path)
 	subject = "%s%s%d" % (names.subject(filename), names.SEGMENT_SEPARATOR, FIRST_SUFFIX)
-	destination = _join(folder, names.filename(subject))
-	return _planned(intents.Copy, path, destination, entries, keep_source=True)
+	destination = join(folder, names.filename(subject))
+	return planned(intents.Copy, path, destination, entries, keep_source=True)
 
 
 def new_page(folder, subject, entries):
 	"""*New proof-page*: an empty page with this subject, in this folder."""
-	destination = _join(folder, names.filename(subject))
-	return _planned(
+	destination = join(folder, names.filename(subject))
+	return planned(
 		lambda _, free: intents.Create(free), None, destination, entries, keep_source=True
 	)
 
@@ -123,10 +128,10 @@ def move(path, destination, entries):
 	"""
 	if destination == path:
 		return NOTHING_TO_DO
-	return _planned(intents.Rename, path, destination, entries)
+	return planned(intents.Rename, path, destination, entries)
 
 
-def _planned(intent, path, destination, entries, keep_source=False):
+def planned(intent, path, destination, entries, keep_source=False):
 	"""`intent(path, destination)`, or a collision offering the next free name.
 
 	A rename or a move ignores the source — nothing collides with itself,
@@ -145,7 +150,7 @@ def _free(destination, taken):
 	folder, filename = _split(destination)
 	suffix = FIRST_SUFFIX
 	while True:
-		candidate = _join(folder, _suffixed(filename, suffix))
+		candidate = join(folder, _suffixed(filename, suffix))
 		if _key(candidate) not in taken:
 			return candidate
 		suffix += 1
@@ -220,5 +225,5 @@ def _split(path):
 	return (folder if separator else ""), name
 
 
-def _join(folder, name):
+def join(folder, name):
 	return folder + tree.PATH_SEPARATOR + name if folder else name
