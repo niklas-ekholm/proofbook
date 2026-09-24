@@ -1,4 +1,4 @@
-"""Planning ProofBook's renames, and the one collision rule they obey (spec §8).
+"""Planning ProofBook's file verbs, and the one collision rule they obey (spec §8).
 
 Rename, move and duplicate can each find their destination taken, and they
 must not each invent an answer: the rule is settled once here and inherited,
@@ -7,8 +7,8 @@ is not among them — status and owner live in the header (ADR-0006), so a tag
 writes the file in place and has nothing to collide with.
 
 The rule is: **never overwrite and never proceed silently.** A taken name is
-returned as a `Collision` naming what is in the way, alongside the rename that
-*Save new* would perform — a numeric suffix on the **subject**, incrementing
+returned as a `Collision` naming what is in the way, alongside the intent —
+rename, copy or new page — that *Save new* would perform — a numeric suffix on the **subject**, incrementing
 until free, so the page sorts next to its sibling; a folder, which has no
 extension to put it in front of, takes the suffix on the whole name.
 
@@ -19,6 +19,7 @@ answered from the listing the adapter already walked, and it is answered
 it. The core returns intents; the adapter performs them.
 """
 
+import unicodedata
 from collections import namedtuple
 
 from . import intents, names, tree
@@ -28,32 +29,29 @@ from . import intents, names, tree
 FIRST_SUFFIX = 2
 
 #: `blocking` is the entry in the way, at the case the listing reported — the
-#: dialog names it, so it must read as it does in Finder. `rename` is the
-#: intent *Save new* performs — a rename, a copy or a new page; *Cancel*
-#: performs nothing.
-Collision = namedtuple("Collision", "blocking rename")
+#: dialog names it, so it must read as it does in Finder. `intent` is what
+#: *Save new* performs — a rename, a copy or a new page; *Cancel* performs
+#: nothing.
+Collision = namedtuple("Collision", "blocking intent")
 
-#: `rename` is None for a plan with nothing to do and for a collision;
+#: `intent` is None for a plan with nothing to do and for a collision;
 #: `collision` is None when the way is clear. Both None is a no-op, which is
 #: not an error — asking a page for the status it already has is legal.
-Plan = namedtuple("Plan", "rename collision")
+Plan = namedtuple("Plan", "intent collision")
 
 NOTHING_TO_DO = Plan(None, None)
-
-# `_planned`'s default: ignore the entry being moved when looking for a clash.
-_SOURCE = object()
 
 
 def resolved(collision, save_new):
 	"""What to do once the designer has answered the collision dialog.
 
-	*Save new* performs the rename the collision was carrying; anything else
+	*Save new* performs the intent the collision was carrying; anything else
 	performs nothing — *Cancel*, and equally a dialog dismissed with no button
 	at all, which vanilla reports as neither. The branch lives here rather
 	than in the adapter so that "Cancel leaves the file untouched" is a claim
 	a test can make, instead of a shape a source assertion has to guess at.
 	"""
-	return Plan(collision.rename, None) if save_new else NOTHING_TO_DO
+	return Plan(collision.intent, None) if save_new else NOTHING_TO_DO
 
 
 def rename(path, subject, entries):
@@ -69,28 +67,29 @@ def move_into(path, folder, entries):
 def duplicate(path, entries):
 	"""*Duplicate*: a copy beside the page, its subject suffixed (`caps-2.txt`).
 
-	The first suffix is proposed, not searched for: when it is taken, that is
-	a collision like any other, and *Save new* counts on from it.
+	The suffix is appended to the subject as it stands: a number the subject
+	already ends in — `sizes-12`, `specimen-2024` — is the designer's, and
+	cannot be told from one ProofBook appended, so it is kept. The first
+	suffix is proposed, not searched for: when it is taken, that is a
+	collision like any other, and *Save new* counts on from it.
 	"""
 	folder, filename = _split(path)
-	suffix = FIRST_SUFFIX
-	destination = _join(folder, _suffixed(filename, suffix))
-	# A duplicate of `caps-2` is `caps-3`: the suffix is the subject's own
-	# number counted on, never the source itself.
-	while destination.casefold() == path.casefold():
-		suffix += 1
-		destination = _join(folder, _suffixed(filename, suffix))
-	return _planned(intents.Copy, path, destination, entries, ignoring=None)
+	subject = "%s%s%d" % (names.subject(filename), names.SEGMENT_SEPARATOR, FIRST_SUFFIX)
+	destination = _join(folder, names.filename(subject))
+	return _planned(intents.Copy, path, destination, entries, keep_source=True)
 
 
 def new_page(folder, subject, entries):
 	"""*New proof-page*: an empty page with this subject, in this folder."""
 	destination = _join(folder, names.filename(subject))
-	taken = _taken(entries, folder)
-	blocking = taken.get(destination.casefold())
-	if blocking is None:
-		return Plan(intents.Create(destination), None)
-	return Plan(None, Collision(blocking, intents.Create(_free(destination, taken))))
+	return _planned(
+		lambda _, free: intents.Create(free), None, destination, entries, keep_source=True
+	)
+
+
+def trash(path):
+	"""*Move to Trash*: unconfirmed, because the Trash is the confirmation."""
+	return intents.Trash(path)
 
 
 def folders(entries):
@@ -104,7 +103,10 @@ def folders(entries):
 		parts = entry.path.split(tree.PATH_SEPARATOR)
 		for end in range(1, len(parts) if not entry.is_dir else len(parts) + 1):
 			found.add(tree.PATH_SEPARATOR.join(parts[:end]))
-	ordered = sorted(found, key=lambda path: [part.casefold() for part in path.split("/")])
+	ordered = sorted(
+		found,
+		key=lambda path: [part.casefold() for part in path.split(tree.PATH_SEPARATOR)],
+	)
 	return [("", 0)] + [(path, path.count(tree.PATH_SEPARATOR) + 1) for path in ordered]
 
 
@@ -124,16 +126,15 @@ def move(path, destination, entries):
 	return _planned(intents.Rename, path, destination, entries)
 
 
-def _planned(intent, path, destination, entries, ignoring=_SOURCE):
+def _planned(intent, path, destination, entries, keep_source=False):
 	"""`intent(path, destination)`, or a collision offering the next free name.
 
 	A rename or a move ignores the source — nothing collides with itself,
-	which is what lets a rename change only case. A copy does not: the source
-	is still there afterwards.
+	which is what lets a rename change only case. A copy or a new page keeps
+	it: the source is still there afterwards.
 	"""
-	ignoring = path if ignoring is _SOURCE else ignoring
-	taken = _taken(entries, _split(destination)[0], ignoring=ignoring)
-	blocking = taken.get(destination.casefold())
+	taken = _taken(entries, _split(destination)[0], ignoring=None if keep_source else path)
+	blocking = taken.get(_key(destination))
 	if blocking is None:
 		return Plan(intent(path, destination), None)
 	return Plan(None, Collision(blocking, intent(path, _free(destination, taken))))
@@ -145,7 +146,7 @@ def _free(destination, taken):
 	suffix = FIRST_SUFFIX
 	while True:
 		candidate = _join(folder, _suffixed(filename, suffix))
-		if candidate.casefold() not in taken:
+		if _key(candidate) not in taken:
 			return candidate
 		suffix += 1
 
@@ -199,8 +200,18 @@ def _taken(entries, folder, ignoring=None):
 			continue
 		if _split(entry.path)[0] != folder:
 			continue
-		taken[entry.path.casefold()] = entry.path
+		taken[_key(entry.path)] = entry.path
 	return taken
+
+
+def _key(path):
+	"""A path as the filesystem compares it: composed, and without case.
+
+	macOS treats `café` written composed and decomposed as one name, and
+	`Caps` and `caps` as one too; a clash the plan misses would reach the
+	disk as an error rather than as the collision dialog.
+	"""
+	return unicodedata.normalize("NFC", path).casefold()
 
 
 def _split(path):

@@ -8,6 +8,8 @@ old grammar is not migrated; `caps-WIP-NE.txt` is simply the subject
 *caps WIP NE*.
 """
 
+import unicodedata
+
 EXTENSION = ".txt"
 
 #: Rendered as a space in the palette, and where *Save new* puts its suffix.
@@ -38,9 +40,10 @@ def filename(subject):
 def typed_subject(text):
 	"""`(subject, None)` for what a designer typed, or `(None, why not)`.
 
-	Trimmed, and a typed `.txt` is not doubled. Refused: nothing at all, a
-	leading dot — Finder hides it, and so would the palette — and the two
-	characters a filename on macOS cannot hold.
+	Trimmed, composed (NFC), and a typed `.txt` is not doubled. Refused:
+	nothing at all, a leading dot — Finder hides it, and so would the palette
+	— the two characters a filename on macOS cannot hold, and line breaks or
+	invisible characters, which a filename can hold and a designer cannot see.
 	"""
 	subject = text.strip()
 	if subject.lower().endswith(EXTENSION):
@@ -51,7 +54,9 @@ def typed_subject(text):
 		return None, "A subject cannot start with a dot; the file would be hidden."
 	if "/" in subject or ":" in subject:
 		return None, "A subject cannot contain “/” or “:”."
-	return subject, None
+	if any(unicodedata.category(character) in ("Cc", "Cf", "Zl", "Zp") for character in subject):
+		return None, "A subject cannot contain line breaks or invisible characters."
+	return unicodedata.normalize("NFC", subject), None
 
 
 def display_subject(subject):

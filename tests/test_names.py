@@ -65,7 +65,7 @@ class TypedSubjects(unittest.TestCase):
 		self.assertEqual(names.typed_subject("caps.TXT")[0], "caps")
 
 	def test_what_cannot_be_a_filename_is_refused_with_why(self):
-		for text in ("", "   ", ".hidden", "a/b", "a:b", ".txt"):
+		for text in ("", "   ", ".hidden", "a/b", "a:b", ".txt", "a\nb", "a\u2028b", "a\x00b"):
 			with self.subTest(text=text):
 				subject, problem = names.typed_subject(text)
 				self.assertIsNone(subject)

@@ -83,6 +83,7 @@ NOTE_COMMIT_POINTS = {
 	"noteEditingEnded_",
 	"treeSelectionChanged",
 	"windowResignedKey_",
+	"_trash",
 }
 
 # The palette's height range, set where the SDK reads it from.

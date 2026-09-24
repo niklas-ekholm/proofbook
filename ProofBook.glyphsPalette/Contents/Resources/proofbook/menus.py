@@ -12,7 +12,7 @@ element says which verb, the rest is the value chosen.
 
 from collections import namedtuple
 
-from . import status, tree
+from . import ops, status, tree
 
 #: One menu item. `items` is its submenu; `tooltip` says why it is disabled.
 Item = namedtuple(
@@ -120,7 +120,7 @@ def _file_verbs(row, folders, malformed):
 	except *Duplicate*, whose copy has to reset claims in a header ProofBook
 	cannot parse.
 	"""
-	parent = row.path.rpartition(tree.PATH_SEPARATOR)[0]
+	parent = ops.parent(row.path)
 	destinations = [
 		Item(
 			INDENT * depth + (folder.rpartition(tree.PATH_SEPARATOR)[2] or ROOT_TITLE),

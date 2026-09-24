@@ -1866,6 +1866,7 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _duplicate_from(self, path, source):
+		"""Duplicate from bytes in hand: reset, plan the copy, write it."""
 		data = tagging.reset(source)
 		if data is None:
 			self._alert(
@@ -1877,6 +1878,7 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _reveal(self, path):
+		"""*Reveal in Finder*: the page selected in its folder's window."""
 		NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_(
 			[NSURL.fileURLWithPath_(self._page_path(path))]
 		)
@@ -1888,7 +1890,11 @@ class ProofBookPalette(PalettePlugin):
 		`trashItemAtURL`, never `os.remove`: nothing ProofBook deletes is
 		beyond the designer's reach.
 		"""
-		filepath = self._page_path(path)
+		if self.notePath == path:
+			# A draft typed on this page goes to the Trash with it, rather
+			# than vanishing when the page leaves the listing.
+			self._commit_note()
+		filepath = self._page_path(ops.trash(path).path)
 		result = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
 			NSURL.fileURLWithPath_(filepath), None, None
 		)
@@ -2165,7 +2171,7 @@ class ProofBookPalette(PalettePlugin):
 		"""
 		if plan.collision is not None:
 			plan = self._ask_about(plan.collision)
-		intent = plan.rename
+		intent = plan.intent
 		if intent is None:
 			return
 		if isinstance(intent, intents.Copy):
@@ -2211,7 +2217,7 @@ class ProofBookPalette(PalettePlugin):
 		answer = dialogs.ask(
 			"“%s” already exists." % collision.blocking,
 			"ProofBook will not overwrite it. Save as “%s” instead?"
-			% collision.rename.destination,
+			% collision.intent.destination,
 			alertStyle="warning",
 			buttonTitles=[("Save new", SAVE_NEW), ("Cancel", CANCEL)],
 		)
@@ -2228,9 +2234,21 @@ class ProofBookPalette(PalettePlugin):
 		"""
 		source = self._page_path(rename.source)
 		destination = self._page_path(rename.destination)
-		ok, error = NSFileManager.defaultManager().moveItemAtPath_toPath_error_(
-			source, destination, None
-		)
+		manager = NSFileManager.defaultManager()
+		if source != destination and source.casefold() == destination.casefold():
+			# A case-only rename: on a case-insensitive volume the destination
+			# "exists" — it is the source — and the move refuses. Through a
+			# temporary name, it is two moves onto names that are free.
+			step = os.path.join(
+				os.path.dirname(source), NOTE_TEMP_PREFIX + os.path.basename(source) + ".proofbook-rename"
+			)
+			ok, error = manager.moveItemAtPath_toPath_error_(source, step, None)
+			if ok:
+				ok, error = manager.moveItemAtPath_toPath_error_(step, destination, None)
+				if not ok:
+					manager.moveItemAtPath_toPath_error_(step, source, None)
+		else:
+			ok, error = manager.moveItemAtPath_toPath_error_(source, destination, None)
 		if not ok:
 			self._alert(
 				"Could not rename “%s”: %s"
@@ -2245,11 +2263,11 @@ class ProofBookPalette(PalettePlugin):
 			# shows go with it, so a renamed placeholder keeps its status.
 			self._carry(rename.source, rename.destination)
 			if self.notePath == rename.source:
-				# And so does the note pane, which is aimed by path: tagging
-				# is a rename (ADR-0001), so a swatch click moves the file
-				# under a pane the designer may be typing into. Left behind,
-				# it would open a path that is gone at the next commit point
-				# and report a file nobody deleted as missing.
+				# And so does the note pane, which is aimed by path: *Rename…*
+				# and *Move to* move the file under a pane the designer may be
+				# typing into. Left behind, it would open a path that is gone
+				# at the next commit point and report a file nobody deleted
+				# as missing.
 				self.notePath = rename.destination
 		# Refresh either way: a rename that failed usually means the folder
 		# moved underneath the palette, which is exactly when the tree is

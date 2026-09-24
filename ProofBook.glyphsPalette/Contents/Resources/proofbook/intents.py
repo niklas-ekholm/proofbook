@@ -22,4 +22,7 @@ Copy = namedtuple("Copy", "source destination")
 #: Create one new, empty proof-page: *New proof-page*.
 Create = namedtuple("Create", "destination")
 
-__all__ = ["Copy", "Create", "MakeDir", "Rename"]
+#: Move one file or folder to the Trash: *Move to Trash*. Never a delete.
+Trash = namedtuple("Trash", "path")
+
+__all__ = ["Copy", "Create", "MakeDir", "Rename", "Trash"]
