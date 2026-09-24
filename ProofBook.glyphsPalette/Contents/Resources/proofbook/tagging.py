@@ -19,13 +19,7 @@ def cycled(data):
 	Only the status changes: no implicit owner, the note and unknown keys
 	kept, the proof text untouched. One click stays one click.
 	"""
-	document = frontmatter.read(data)
-	if document.malformed:
-		return None
-	header = document.header
-	return frontmatter.write(
-		data, header._replace(status=status.next_stored(header.status))
-	)
+	return _rewritten(data, lambda header: {"status": status.next_stored(header.status)})
 
 
 def predicted(known):
@@ -36,3 +30,38 @@ def predicted(known):
 	cannot disagree about which status comes next.
 	"""
 	return known._replace(status=status.next_stored(known.status))
+
+
+def setting_status(value):
+	"""The change and prediction for the menu's *Status* (#22): set outright.
+
+	The swatch's operation with a value chosen rather than cycled — the same
+	read, the same write, the same download on a placeholder. `todo` removes
+	the key.
+	"""
+	stored = status.stored(status.recognised(value) or status.TODO)
+	return (
+		lambda data: _rewritten(data, lambda header: {"status": stored}),
+		lambda known: known._replace(status=stored),
+	)
+
+
+def setting_owner(owner):
+	"""The change and prediction for *Set owner*; None is *Clear owner*."""
+	written = None if owner is None else status.written_owner(owner)
+	return (
+		lambda data: _rewritten(data, lambda header: {"owner": written}),
+		lambda known: known._replace(owner=written),
+	)
+
+
+def _rewritten(data, fields):
+	"""The bytes with the header fields `fields(header)` names replaced.
+
+	None for a header that cannot be parsed: such a page is untaggable.
+	"""
+	document = frontmatter.read(data)
+	if document.malformed:
+		return None
+	header = document.header
+	return frontmatter.write(data, header._replace(**fields(header)))

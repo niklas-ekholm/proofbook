@@ -332,18 +332,47 @@ class AdapterRules(unittest.TestCase):
 		settings = pysource.function(self.adapter, "settings")
 		self.assertIn("self._palette_view", pysource.called_names(settings))
 
-	def test_the_palette_installs_no_context_menu(self):
-		# Neither empty state offers one, and there are no rows to target
-		# until issue #22 builds the menu on top of them.
-		source = pysource.called_names(self.adapter) | pysource.referenced_names(
-			self.adapter
+	def test_the_context_menu_targets_the_clicked_row(self):
+		# Spec §8: right-click targets the row under the cursor — found from
+		# the event, never the selection, which may be another page.
+		menu = pysource.function(self.adapter, "treeMenu")
+		self.assertIsNotNone(menu, "the tree has no context menu")
+		self.assertIn("menuCallback", pysource.keyword_argument_names(self.adapter))
+		self.assertIn("self._row_under_cursor", pysource.called_names(menu))
+		self.assertIn(
+			"table.rowAtPoint_",
+			pysource.called_names(pysource.function(self.adapter, "_row_under_cursor")),
 		)
-		self.assertEqual(
-			{"NSMenu", "setMenu_"}.intersection(source),
-			set(),
+		self.assertEqual(pysource.attribute_reads(menu, "self.selectedPath"), [])
+
+	def test_opening_the_menu_never_changes_the_selection_or_the_edit_view(self):
+		# A right-click that selected would replace the tab being read in
+		# order to show a menu (spec §8).
+		for name in ("treeMenu", "_menu_items"):
+			with self.subTest(method=name):
+				called = pysource.called_names(pysource.function(self.adapter, name))
+				for forbidden in ("setSelectedIndexes", "_display_page", "_push_text"):
+					self.assertEqual(
+						[call for call in called if call.endswith(forbidden)], []
+					)
+
+	def test_the_menu_is_the_cores_model(self):
+		# Which items exist, which are live and which is checked are decisions
+		# (ADR-0005); the adapter only binds them.
+		self.assertIn(
+			"menus.page_menu",
+			pysource.called_names(pysource.function(self.adapter, "treeMenu")),
 		)
-		self.assertNotIn(
-			"menuCallback", pysource.keyword_argument_names(self.adapter)
+
+	def test_the_menus_status_verb_is_the_swatchs_operation(self):
+		# #42: same read, same write, same download on a placeholder.
+		self.assertIn(
+			"tagging.setting_status",
+			pysource.called_names(pysource.function(self.adapter, "_set_status")),
+		)
+		self.assertIn(
+			"self._retag",
+			pysource.called_names(pysource.function(self.adapter, "_set_status")),
 		)
 
 	def test_a_row_draws_itself_rather_than_stacking_up_controls(self):
