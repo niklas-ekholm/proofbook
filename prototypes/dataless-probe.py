@@ -43,6 +43,15 @@ from Foundation import NSURL, NSFileManager
 #: offline run, because the online run leaves everything materialised.
 RESET = False
 
+#: Report what the probe files hold *now* and touch nothing else. For the
+#: question a fast write raises: bytes that landed locally in 2ms are not yet
+#: bytes the provider accepted. A write over a placeholder never materialised
+#: it, so the provider may still believe it holds the authoritative copy and
+#: re-download the old version over yours, minutes later and silently. Run
+#: this once the cloud badge says synced, and ideally check the same file on
+#: another device or in the provider's web UI.
+VERIFY = False
+
 #: `os.lstat().st_flags` bit macOS sets on a File Provider placeholder. Plain
 #: Python, no per-provider code — ADR-0004's finding, and the whole reason the
 #: tree can stay cheap today.
@@ -221,10 +230,47 @@ def _report(label, findings):
 		)
 
 
+def verify(name, root):
+	"""What the probe files hold now, without writing anything."""
+	folder = os.path.join(root, FOLDER)
+	print("\n### %s — %s" % (name, folder))
+	if not os.path.isdir(folder):
+		print("  no probe folder; nothing to verify")
+		return
+	for entry in sorted(os.listdir(folder)):
+		path = _own(os.path.join(folder, entry), root)
+		try:
+			with open(path, "rb") as handle:
+				data = handle.read()
+		except OSError as error:
+			print("  %-18s unreadable: %s" % (entry, error))
+			continue
+		if entry == "replace-me.txt":
+			verdict = "REPLACEMENT held" if data == REPLACEMENT else (
+				"REVERTED to the original body" if data == BODY else "unrecognised"
+			)
+		else:
+			verdict = "original body" if data == BODY else "changed"
+		print(
+			"  %-18s dataless=%-5s %4d bytes  %s"
+			% (entry, _dataless(path), len(data), verdict)
+		)
+
+
 def main():
 	present = [(name, root) for name, root in ROOTS if os.path.isdir(root)]
 	if not present:
 		print("No Dropbox or iCloud Drive folder found. Nothing to measure.")
+		return
+
+	if VERIFY:
+		for name, root in present:
+			verify(name, root)
+		print(
+			"\n`REPLACEMENT held` means the provider accepted a write that never\n"
+			"materialised the file. `REVERTED` means it did not, and the finding\n"
+			"that writing a placeholder is free is void."
+		)
 		return
 
 	for name, root in present:
