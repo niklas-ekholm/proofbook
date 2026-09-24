@@ -17,6 +17,7 @@ exercise the AppKit fallback view without uninstalling vanilla.
 
 from __future__ import annotations
 
+import math
 import os
 import platform
 import queue
@@ -269,6 +270,23 @@ READ_CHUNK = 20
 # Redraws while results land are throttled to this, never one per file (#40).
 REDRAW_DELAY = 0.15
 
+# The still-walking swatch pulses (#41): one breath every PULSE_PERIOD seconds,
+# its visible rows redrawn every PULSE_FRAME while any row is walking, and not
+# at all otherwise.
+PULSE_PERIOD = 1.1
+PULSE_FRAME = 0.05
+PULSE_FLOOR = 0.35
+
+# The placeholder swatch's dashes, and the hatching of the coverage bar's
+# unknown share: on and off lengths in points.
+SWATCH_DASH = (1.6, 1.3)
+HATCH_SPACING = 3.0
+
+# What the coverage strip says while the first walk of a proof-book has not
+# returned (#48): not an empty state — those are conclusions about the
+# folder, and this is the absence of one.
+NOT_YET_LISTED = "Reading the proof-book…"
+
 # The one opt-in debug switch (spec §9): off, and logging to the Macro Panel
 # when on. Not a logging framework.
 PROOFBOOK_DEBUG = False
@@ -495,6 +513,19 @@ def _status_fill(value):
 	if value == status.WIP:
 		return NSColor.systemOrangeColor()
 	return None
+
+
+def _pulse_alpha():
+	"""The still-walking swatch's opacity now: a slow breath, never out."""
+	phase = (time.monotonic() % PULSE_PERIOD) / PULSE_PERIOD
+	breath = 0.5 - 0.5 * math.cos(2 * math.pi * phase)
+	return PULSE_FLOOR + (1 - PULSE_FLOOR) * breath
+
+
+def _warn_color(emphasized):
+	if emphasized:
+		return NSColor.alternateSelectedControlTextColor()
+	return NSColor.systemRedColor()
 
 
 def _label_color(emphasized):
@@ -757,7 +788,12 @@ class ProofBookRowView(NSView):
 
 	@objc.python_method
 	def _drawSwatch(self, marker, status, emphasized):
-		"""`todo` an empty outline, `wip` amber, `done` green (spec §4).
+		"""Six states in one 9pt circle (spec §4, #41).
+
+		`todo` an empty outline, `wip` amber, `done` green; and for the three
+		absences of an answer, a dashed outline (unknown), a faint pulsing one
+		(still walking) and a crossed one in the warning colour (malformed).
+		Row anatomy never changes: the same circle, in the same place.
 
 		Left-aligned in the marker column rather than centred in it: this is
 		the leftmost ink in the tree, and it is what lines up with the
@@ -786,7 +822,21 @@ class ProofBookRowView(NSView):
 			)
 		)
 		outline.setLineWidth_(1.0)
-		_muted_color(emphasized).set()
+		if status == tree.MALFORMED:
+			_warn_color(emphasized).set()
+			outline.stroke()
+			cross = NSBezierPath.bezierPath()
+			cross.moveToPoint_((box.origin.x + 1.5, box.origin.y + box.size.height - 1.5))
+			cross.lineToPoint_((box.origin.x + box.size.width - 1.5, box.origin.y + 1.5))
+			cross.setLineWidth_(1.0)
+			cross.stroke()
+			return
+		color = _muted_color(emphasized)
+		if status == tree.UNKNOWN:
+			outline.setLineDash_count_phase_(SWATCH_DASH, len(SWATCH_DASH), 0.0)
+		elif status == tree.WALKING:
+			color = color.colorWithAlphaComponent_(color.alphaComponent() * _pulse_alpha())
+		color.set()
 		outline.stroke()
 
 	@objc.python_method
@@ -845,7 +895,7 @@ class ProofBookRowView(NSView):
 
 
 class ProofBookCoverageBarView(NSView):
-	"""Done and wip as proportions of the whole proof-book (spec §4).
+	"""Done, wip and unknown as proportions of the whole proof-book (spec §4).
 
 	Deliberately not a `LevelIndicator` or a progress bar: this is two
 	proportions in one track, and both stock controls draw a single value
@@ -874,10 +924,25 @@ class ProofBookCoverageBarView(NSView):
 		track.addClip()
 		done = bounds.size.width * count.done_fraction
 		wip = bounds.size.width * count.wip_fraction
+		unknown = bounds.size.width * count.unknown_fraction
 		NSColor.systemGreenColor().set()
 		NSBezierPath.fillRect_(NSMakeRect(0, 0, done, bounds.size.height))
 		NSColor.systemOrangeColor().set()
 		NSBezierPath.fillRect_(NSMakeRect(done, 0, wip, bounds.size.height))
+		# What is not known is hatched, not left as track: the denominator is
+		# the whole book, and the bar says how much of it has no answer yet.
+		if unknown > 0:
+			NSBezierPath.clipRect_(NSMakeRect(done + wip, 0, unknown, bounds.size.height))
+			NSColor.tertiaryLabelColor().set()
+			height = bounds.size.height
+			x = done + wip - height
+			while x < done + wip + unknown:
+				stripe = NSBezierPath.bezierPath()
+				stripe.moveToPoint_((x, height))
+				stripe.lineToPoint_((x + height, 0))
+				stripe.setLineWidth_(1.0)
+				stripe.stroke()
+				x += HATCH_SPACING
 		NSGraphicsContext.restoreGraphicsState()
 
 
@@ -1140,6 +1205,11 @@ class ProofBookPalette(PalettePlugin):
 		# Placeholder tags in flight: what each row shows until its page
 		# lands, laid over whatever a walk says meanwhile.
 		self.pendingTags = {}
+		# The proof-book the tree last drew a listing of. Until that is this
+		# one, the palette is *not yet listed* (#48), which is neither empty
+		# state. And whether the pulse's redraw loop is scheduled.
+		self.listedBook = None
+		self.pulsing = False
 		# Single-page placeholder reads (spec §7): one per page, capped, each
 		# with a deadline; `expiries` is what each one says when it passes.
 		self.flights = reading.Flights()
@@ -1260,6 +1330,19 @@ class ProofBookPalette(PalettePlugin):
 			sizeStyle="small",
 		)
 		group.coverageCaption.show(False)
+		# "6 unknown", on the right of the same strip, while anything is.
+		group.coverageUnknown = vanilla.TextBox(
+			(
+				PALETTE_MARGIN - TEXT_FIELD_INSET,
+				COVERAGE_CAPTION_TOP,
+				-PALETTE_MARGIN,
+				COVERAGE_CAPTION_HEIGHT,
+			),
+			"",
+			sizeStyle="small",
+			alignment="right",
+		)
+		group.coverageUnknown.show(False)
 		# The download line (spec §7): shown only while something is a
 		# placeholder, or while a download runs. It pushes the tree down
 		# rather than covering it.
@@ -2473,6 +2556,7 @@ class ProofBookPalette(PalettePlugin):
 		"""Draw a listing, unless it is of a proof-book that is no longer this one."""
 		if walked.book != self.bookPath:
 			return
+		self.listedBook = walked.book
 		self.entries = walked.entries
 		self.known, self.written = cache.overridden(
 			walked.known, walked.entries, self.written
@@ -2574,6 +2658,7 @@ class ProofBookPalette(PalettePlugin):
 		group.tree.show(False)
 		group.coverage.show(False)
 		group.coverageCaption.show(False)
+		group.coverageUnknown.show(False)
 		group.noteHeader.show(False)
 		group.noteEditor.show(False)
 		self.rows = []
@@ -2596,7 +2681,9 @@ class ProofBookPalette(PalettePlugin):
 		meant to answer.
 		"""
 		group = self.paletteView.group
-		self.rows = tree.flatten(self.entries, self.expanded, self.known)
+		self.rows = tree.flatten(
+			self.entries, self.expanded, self.known, self.walks.walking
+		)
 		self._draw_coverage()
 		selected = [
 			index
@@ -2609,6 +2696,28 @@ class ProofBookPalette(PalettePlugin):
 			group.tree.setSelectedIndexes(selected)
 		finally:
 			self.settingSelection = False
+		self._pulse_later()
+
+	@objc.python_method
+	def _pulse_later(self):
+		"""Keep the still-walking swatches breathing, while there are any."""
+		if self.pulsing or not any(row.status == tree.WALKING for row in self.rows):
+			return
+		self.pulsing = True
+		self.performSelector_withObject_afterDelay_("pulse:", None, PULSE_FRAME)
+
+	def pulse_(self, sender):
+		"""One frame of the pulse: the visible rows redraw, nothing else."""
+		self.pulsing = False
+		if vanilla is None:
+			return
+		table = self.paletteView.group.tree.getNSTableView()
+		visible = table.rowsInRect_(table.visibleRect())
+		for index in range(visible.location, visible.location + visible.length):
+			view = table.viewAtColumn_row_makeIfNecessary_(0, index, False)
+			if view is not None:
+				view.setNeedsDisplay_(True)
+		self._pulse_later()
 
 	@objc.python_method
 	def _draw_coverage(self):
@@ -2620,16 +2729,28 @@ class ProofBookPalette(PalettePlugin):
 		rows that are the actual answer — a folder tree waiting for a page.
 		"""
 		group = self.paletteView.group
+		if self.listedBook != self.bookPath:
+			# Not yet listed: one quiet line, no bar, no rows (#48).
+			group.coverage.show(False)
+			group.coverageUnknown.show(False)
+			group.coverageCaption.set(NOT_YET_LISTED)
+			group.coverageCaption.show(True)
+			return
 		count = tree.coverage(self.entries, self.known)
 		caption = tree.coverage_caption(count)
 		if caption is None:
 			group.coverage.show(False)
 			group.coverageCaption.show(False)
+			group.coverageUnknown.show(False)
 			return
 		group.coverage.set(count)
 		group.coverageCaption.set(caption)
 		group.coverage.show(True)
 		group.coverageCaption.show(True)
+		unknown = tree.unknown_caption(count)
+		group.coverageUnknown.show(unknown is not None)
+		if unknown is not None:
+			group.coverageUnknown.set(unknown)
 
 	@objc.python_method
 	def _draw_hint(self):
