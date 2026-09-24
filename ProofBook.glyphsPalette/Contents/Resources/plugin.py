@@ -81,6 +81,7 @@ import proofbook  # noqa: E402  (only importable once sys.path is set, above)
 from proofbook import (  # noqa: E402
 	discovery,
 	edit,
+	cache,
 	frontmatter,
 	names,
 	ops,
@@ -256,6 +257,18 @@ READ_DEADLINE = 10.0
 # failed and moves on. A file that never answers must not stall the rest.
 DOWNLOAD_FILE_TIMEOUT = 30.0
 
+# Where the status cache lives: one JSON file per proof-book, never beside it
+# (#39). Glyphs.defaults is a plist shared with every plugin and rewritten
+# wholesale — right for two scalars, wrong for thousands of entries.
+CACHE_DIRECTORY = os.path.expanduser("~/Library/Application Support/ProofBook")
+
+# How many pages a walk reads before handing what it has back, so a cold open
+# fills in as it goes rather than all at the end (#40).
+READ_CHUNK = 20
+
+# Redraws while results land are throttled to this, never one per file (#40).
+REDRAW_DELAY = 0.15
+
 # The one opt-in debug switch (spec §9): off, and logging to the Macro Panel
 # when on. Not a logging framework.
 PROOFBOOK_DEBUG = False
@@ -310,6 +323,19 @@ def _read_bytes(filepath):
 	"""A file's bytes. Safe on any thread; blocks on a placeholder until it lands."""
 	with open(filepath, "rb") as handle:
 		return handle.read()
+
+
+def _stat(filepath):
+	"""`(placeholder, mtime, size)` from `lstat`, which never downloads.
+
+	`(False, None, None)` for a file that will not stat: whatever reads it
+	next finds out why, with an error it can report.
+	"""
+	try:
+		info = os.lstat(filepath)
+	except OSError:
+		return False, None, None
+	return bool(info.st_flags & SF_DATALESS), info.st_mtime, info.st_size
 
 
 def _is_placeholder(filepath):
@@ -368,9 +394,37 @@ def _without_placeholders(entries, landed):
 	]
 
 
-#: One walk of the proof-book: the listing, and what each downloaded page's
-#: header says. `book` None is the walk of no proof-book at all.
-_Walked = namedtuple("_Walked", "book entries known")
+#: One walk of the proof-book: the listing, what is known of each page's
+#: header, and the cache it leaves. `book` None is the walk of no proof-book.
+_Walked = namedtuple("_Walked", "book entries known pages", defaults=(None,))
+
+
+def _load_cache(book):
+	"""The proof-book's status cache from disk, or an empty one. Any thread."""
+	try:
+		with open(os.path.join(CACHE_DIRECTORY, cache.filename(book))) as handle:
+			return cache.load(handle.read())
+	except (OSError, UnicodeDecodeError):
+		return {}
+
+
+def _save_cache(book, pages):
+	"""Write the cache beside nothing the designer sees. Failures are silent.
+
+	Written to a temporary name and swapped in, so a crash mid-write costs a
+	cold start rather than a cache that will not parse. Two windows on one
+	book both write it; the last writer wins, and the loser's next walk
+	re-validates for free (#39).
+	"""
+	path = os.path.join(CACHE_DIRECTORY, cache.filename(book))
+	temporary = path + ".tmp"
+	try:
+		os.makedirs(CACHE_DIRECTORY, exist_ok=True)
+		with open(temporary, "w") as handle:
+			handle.write(cache.dump(pages))
+		os.replace(temporary, path)
+	except OSError:
+		_debug("could not save the status cache:\n%s" % traceback.format_exc())
 
 
 def _not_downloaded(name):
@@ -1057,6 +1111,13 @@ class ProofBookPalette(PalettePlugin):
 		# landing late is about a proof-book, or a moment, that has gone.
 		self.worker = _Worker()
 		self.walks = reading.Walks()
+		# The status cache for this proof-book (#39): None until the first
+		# walk has loaded it from disk. `written` is ProofBook's own writes
+		# that no walk has seen yet, so a walk that started before one cannot
+		# put the old status back (#40).
+		self.cachePages = None
+		self.written = {}
+		self.redrawPending = False
 		# Single-page placeholder reads (spec §7): one per page, capped, each
 		# with a deadline; `expiries` is what each one says when it passes.
 		self.flights = reading.Flights()
@@ -1535,8 +1596,12 @@ class ProofBookPalette(PalettePlugin):
 				"Fix it in a text editor." % name
 			)
 			return
-		if data != source:
-			self._replace(filepath, data, "Could not tag “%s”" % name)
+		if data != source and self._replace(filepath, data, "Could not tag “%s”" % name):
+			# The row shows the new status at once (#40), and keeps showing
+			# it against any walk that started before the write.
+			known, mtime, size = self._learned(path, frontmatter.read(data))
+			if mtime is not None:
+				self.written[path] = cache.Written(known, mtime, size)
 		# ProofBook's own write, so the tree is refreshed (spec §6).
 		self._resolve()
 
@@ -1639,13 +1704,12 @@ class ProofBookPalette(PalettePlugin):
 			# a volume that is not mounted must not put an alert in front of
 			# them every time they come back.
 			self._show_note(path, None)
-			self._alert(
-				"Could not read “%s”; it may not be downloaded yet."
-				% os.path.basename(self._page_path(path))
-			)
+			self._alert(_not_downloaded(_name(self._page_path(path))))
 			return
+		self._learned(path, document)
 		self._push_text(document.text)
 		self._show_note(path, document)
+		self._draw()
 
 	@objc.python_method
 	def _display_placeholder(self, path):
@@ -1675,14 +1739,19 @@ class ProofBookPalette(PalettePlugin):
 	@objc.python_method
 	def _placeholder_displayed(self, path, data, wanted):
 		"""The selected placeholder landed, or failed, or came too late."""
+		if data is not None:
+			# Wanted or not, it is on disk and read: the cache has it (#42).
+			document = frontmatter.read(data)
+			self._learned(path, document)
 		if not wanted:
+			self._draw()
 			return  # Abandoned: the designer was told it did not happen.
 		if data is None:
 			self._alert(_not_downloaded(_name(self._page_path(path))))
 			return
 		if self.selectedPath != path:
+			self._draw()
 			return  # The designer has moved on; it is on disk for next time.
-		document = frontmatter.read(data)
 		self._push_text(document.text)
 		self._show_note(path, document)
 		# It is on disk now: the listing, the hint and its status all moved.
@@ -2133,6 +2202,8 @@ class ProofBookPalette(PalettePlugin):
 			self.selectedPath = None
 			self.entries = []
 			self.known = {}
+			self.cachePages = None
+			self.written = {}
 			# The proof-book changed underneath the download, which is the
 			# one thing that cancels it (spec §7).
 			if self.download is not None:
@@ -2149,20 +2220,46 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _walk_later(self):
+		pages = None if self.cachePages is None else dict(self.cachePages)
 		self.worker.submit(
 			self._background(
-				self._walk, self._walked, self.bookPath, failed=self.walks.failed
+				self._walk, self._walked, self.bookPath, pages, failed=self.walks.failed
 			)
 		)
 
 	@objc.python_method
-	def _walk(self, book):
-		"""The listing and every downloaded page's header. On the worker."""
+	def _walk(self, book, pages):
+		"""The listing, validated against the cache, and the reads it needs.
+
+		On the worker. The listing and what the cache still vouches for are
+		handed back first, so a book opened before draws every status at once;
+		the pages that need reading follow in chunks. Steady state is zero
+		reads (#40). A placeholder is never read here, whatever the cache
+		says about it (#38).
+		"""
 		started = _clock()
+		if pages is None:
+			pages = _load_cache(book)
 		entries = self._listing(book)
-		walked = _Walked(book, entries, self._headers(book, entries))
-		_debug("walked %d entries in %.2fs" % (len(entries), _clock() - started))
-		return walked
+		plan = cache.plan(pages, entries)
+		self._on_main(self._listed, _Walked(book, entries, dict(plan.known)))
+		reads = {}
+		by_path = {entry.path: entry for entry in entries}
+		for start in range(0, len(plan.to_read), READ_CHUNK):
+			chunk = [by_path[path] for path in plan.to_read[start : start + READ_CHUNK]]
+			landed = self._headers(book, chunk)
+			reads.update(landed)
+			self._on_main(self._headers_landed, book, landed)
+		updated = cache.updated(pages, entries, reads)
+		if updated != pages:
+			_save_cache(book, updated)
+		_debug(
+			"walked %d entries, read %d, in %.2fs"
+			% (len(entries), len(reads), _clock() - started)
+		)
+		known = dict(plan.known)
+		known.update(reads)
+		return _Walked(book, entries, known, updated)
 
 	@objc.python_method
 	def _walked(self, walked):
@@ -2172,9 +2269,51 @@ class ProofBookPalette(PalettePlugin):
 		screen, and a run of requests — a download landing page after page —
 		must not starve the tree of every result.
 		"""
+		if walked.book == self.bookPath:
+			self.cachePages = walked.pages
 		if self.walks.landed() and self.bookPath is not None:
 			self._walk_later()
 		self._listed(walked)
+
+	@objc.python_method
+	def _headers_landed(self, book, landed):
+		"""A chunk of a walk's reads: fold it in, and redraw soon, not now."""
+		if book != self.bookPath:
+			return
+		self.known.update(landed)
+		self.known, self.written = cache.overridden(
+			self.known, self.entries, self.written
+		)
+		self._redraw_soon()
+
+	@objc.python_method
+	def _redraw_soon(self):
+		"""One redraw for however many results land in `REDRAW_DELAY`."""
+		if self.redrawPending:
+			return
+		self.redrawPending = True
+		self.performSelector_withObject_afterDelay_("redrawNow:", None, REDRAW_DELAY)
+
+	def redrawNow_(self, sender):
+		self.redrawPending = False
+		self._draw()
+
+	@objc.python_method
+	def _learned(self, path, document):
+		"""ProofBook read or wrote this page itself: the row and the cache say so.
+
+		Selection already parsed the header for the note pane; not taking
+		the status from it would be discarding the one read that is known to
+		have happened (#40).
+		"""
+		known = tree.Known(
+			document.header.status, document.header.owner, document.malformed
+		)
+		self.known[path] = known
+		placeholder, mtime, size = _stat(self._page_path(path))
+		if self.cachePages is not None and mtime is not None and not placeholder:
+			self.cachePages = cache.stamped(self.cachePages, path, known, mtime, size)
+		return known, mtime, size
 
 	@objc.python_method
 	def _listed(self, walked):
@@ -2182,7 +2321,9 @@ class ProofBookPalette(PalettePlugin):
 		if walked.book != self.bookPath:
 			return
 		self.entries = walked.entries
-		self.known = walked.known
+		self.known, self.written = cache.overridden(
+			walked.known, walked.entries, self.written
+		)
 		# A page that has left the listing takes the selection with it — and
 		# nothing else: the Edit view is left exactly as it is, because
 		# deleting a file must not blank a tab that may still be being read
@@ -2216,22 +2357,24 @@ class ProofBookPalette(PalettePlugin):
 			for name in dirnames:
 				entries.append(tree.Entry(prefix + name, True))
 			for name in filenames:
-				placeholder = _is_placeholder(os.path.join(dirpath, name))
-				entries.append(tree.Entry(prefix + name, False, placeholder))
+				placeholder, mtime, size = _stat(os.path.join(dirpath, name))
+				entries.append(
+					tree.Entry(prefix + name, False, placeholder, mtime, size)
+				)
 		return entries
 
 	@objc.python_method
 	def _headers(self, root, entries):
 		"""What each page's header says, for the tree and the coverage.
 
-		On the worker, with the listing. Every downloaded page is read on
-		every walk — the status cache (#47) replaces that. A **placeholder is
-		never read**: the listing's `SF_DATALESS` flag says which they are,
-		and a placeholder read blocks until it downloads, or forever offline
-		(#38). Such a page is drawn `todo` until then.
+		On the worker, for the pages the cache could not vouch for. A
+		**placeholder is never read**: the listing's `SF_DATALESS` flag says
+		which they are, and a placeholder read blocks until it downloads, or
+		forever offline (#38).
 
-		A page that will not read is left out, and is drawn `todo` too; a
-		refresh is nobody's question, so it is not an alert (spec §7).
+		A page that will not read is left out, silently and uncounted: a
+		refresh is nobody's question, and one unreadable file would otherwise
+		alert on every become-key (#40).
 		"""
 		known = {}
 		for entry in entries:

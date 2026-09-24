@@ -31,8 +31,11 @@ PATH_SEPARATOR = "/"
 #: is given, so an adapter that yields only files still draws the tree.
 #: `placeholder` is the `SF_DATALESS` flag from `lstat`: a page the cloud
 #: provider has not downloaded, which is never read to fill in the tree
-#: (ADR-0004).
-Entry = namedtuple("Entry", "path is_dir placeholder", defaults=(False,))
+#: (ADR-0004). `mtime` and `size` are the same `lstat`'s, which is what the
+#: status cache is validated against.
+Entry = namedtuple(
+	"Entry", "path is_dir placeholder mtime size", defaults=(False, None, None)
+)
 
 #: What is known about one page's header: its stored status (None is `todo`),
 #: its owner as written, and whether the header could be read at all.
