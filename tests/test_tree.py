@@ -145,10 +145,13 @@ class RowContent(unittest.TestCase):
 		self.assertIsNone(row.owner)
 
 	def test_a_legacy_name_is_all_subject(self):
-		(row,) = tree.flatten(listing("caps-WIP-NE.txt"))
+		(row,) = tree.flatten(
+			listing("caps-WIP-NE.txt"), known={"caps-WIP-NE.txt": known()}
+		)
 		self.assertEqual(row.subject, "caps WIP NE")
 		self.assertEqual(row.status, status.TODO)
 		self.assertIsNone(row.owner)
+
 
 	def test_the_raw_filename_rides_along_for_the_tooltip(self):
 		# The only place the filename appears in the palette: transparency on
@@ -223,6 +226,45 @@ class Expansion(unittest.TestCase):
 		expanded = {"caps"}
 		tree.toggled(expanded, "words")
 		self.assertEqual(expanded, {"caps"})
+
+
+class Unknown(unittest.TestCase):
+	"""Three absences of an answer, none of which may look like `todo` (#41)."""
+
+	def test_a_placeholder_nothing_is_known_about_is_unknown(self):
+		entries = [tree.Entry("caps.txt", False, True)]
+		# A walk never schedules a placeholder for reading (#40), so it is
+		# never pending: it is unknown until someone downloads it.
+		(row,) = tree.flatten(entries, known={}, pending=())
+		self.assertEqual(row.status, tree.UNKNOWN)
+
+	def test_a_downloaded_page_the_walk_has_yet_to_read_is_still_walking(self):
+		(row,) = tree.flatten(listing("caps.txt"), known={}, pending={"caps.txt"})
+		self.assertEqual(row.status, tree.WALKING)
+
+	def test_a_page_the_walk_tried_and_could_not_read_is_unknown(self):
+		# It would not read. The walk is past it, so it is not still walking,
+		# and it does not pulse again while the next walk vouches for others.
+		(row,) = tree.flatten(listing("caps.txt"), known={}, pending=set())
+		self.assertEqual(row.status, tree.UNKNOWN)
+
+	def test_a_malformed_page_says_so(self):
+		(row,) = tree.flatten(
+			listing("caps.txt"), known={"caps.txt": known(malformed=True)}
+		)
+		self.assertEqual(row.status, tree.MALFORMED)
+		self.assertIsNone(row.owner)
+
+	def test_a_cached_placeholder_shows_its_status(self):
+		# The cache vouches for it (#39): known is known, downloaded or not.
+		entries = [tree.Entry("caps.txt", False, True)]
+		(row,) = tree.flatten(entries, known={"caps.txt": known("done")})
+		self.assertEqual(row.status, status.DONE)
+
+	def test_none_of_them_is_a_status(self):
+		for condition in (tree.UNKNOWN, tree.WALKING, tree.MALFORMED):
+			with self.subTest(condition=condition):
+				self.assertNotIn(condition, status.STATUSES)
 
 
 if __name__ == "__main__":

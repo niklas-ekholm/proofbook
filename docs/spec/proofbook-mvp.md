@@ -153,7 +153,7 @@ A proof-page row shows:
   | `todo` | solid grey outline |
   | `wip` | amber |
   | `done` | green |
-  | placeholder, status unknown | dashed grey outline |
+  | unknown — a placeholder nothing is known about, or a downloaded page that would not read | dashed grey outline |
   | still walking — not yet validated or read | faint outline, pulsing (~1.1s) |
   | malformed | warn-coloured outline, crossed |
 
@@ -386,6 +386,6 @@ Not blockers; revisit after the MVP has been used:
 - Whether a flat `List2` with Python-computed indentation stays usable at several hundred rows, and whether deep nesting needs more than expand/collapse.
 - Whether the proof-book ever needs a notion of order beyond alphabetical.
 - Whether ProofBook needs any undo beyond the Trash — the recursive bulk re-tag has none, and a confirmation dialog is its only guard.
-- What the *not yet listed* state (§4) shows while the first listing walk runs. It is distinct from both empty states and usually lasts under a second; the prototype for #41 covered rows, not the moment before there are any.
+- Whether the *not yet listed* state (§4) is right as built in #48: one dim line in the coverage strip, *"Reading the proof-book…"*, with no bar and no rows. It is distinct from both empty states and usually lasts under a second; the prototype for #41 covered rows, not the moment before there are any, so this is a first guess to look at in Glyphs.
 - Whether iCloud hangs offline as Dropbox does (#38 measured Dropbox only). The design holds either way; see ADR-0006.
 - Distribution through the Plugin Manager (vanilla is declarable as a dependency; the answer does not change between personal use and shipping).

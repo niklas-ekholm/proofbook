@@ -15,9 +15,11 @@ asked of the rows: coverage is about the whole book, not the visible part.
 
 Status and owner are not in the listing: they live in each page's header
 (ADR-0006). The adapter hands them over as `known` — what the status cache
-vouches for, and what the walk has read. A page missing from it is drawn
-`todo` and unowned for now, which the glossary says an unknown status is not;
-the unknown row states (#48) are what tell the two apart.
+vouches for, and what the walk has read. A page missing from it is **not**
+`todo`: `todo` is an answer, and this is the absence of one (#41). It is
+drawn as one of three conditions — a placeholder nothing is known about, a
+page the walk has not reached, or a header that could not be parsed — each
+its own swatch, and none of them a status.
 """
 
 from collections import namedtuple
@@ -41,18 +43,32 @@ Entry = namedtuple(
 #: its owner as written, and whether the header could be read at all.
 Known = namedtuple("Known", "status owner malformed")
 
-#: What a page nothing is known about is drawn as.
-NOTHING_KNOWN = Known(None, None, False)
+#: What a row shows when it has no status to show (#41). Never statuses:
+#: `todo` is an answer, and these are the absence of one.
+UNKNOWN = "unknown"  # A placeholder, or a page that would not read.
+WALKING = "walking"  # A downloaded page the walk has not reached yet.
+MALFORMED = "malformed"  # Read, and its header could not be parsed.
+
+#: What the coverage strip says before the first walk of a proof-book has
+#: returned (#48) — not an empty state: those are conclusions about the
+#: folder, and this is the absence of one.
+NOT_YET_LISTED = "Reading the proof-book…"
 
 #: `path` is the row's identity — the expansion set and the selection are both
 #: sets of these. `filename` is the raw name, and is the tooltip: the only
-#: place in the palette a filename appears. `expanded` is None for a page.
+#: place in the palette a filename appears. `status` is what the swatch draws:
+#: a status, or `UNKNOWN`, `WALKING` or `MALFORMED`. `expanded` is None for a
+#: page.
 Row = namedtuple("Row", "path depth is_dir filename subject status owner expanded")
 
-#: The coverage answer in four counts, plus the two proportions the bar draws.
-#: `todo` carries every page with no `status` key — they render as `todo` and
-#: count as it, because a page nobody has tagged is a page nobody has started.
-Coverage = namedtuple("Coverage", "done wip todo total done_fraction wip_fraction")
+#: The coverage answer: four counts that sum to `total`, the whole book, and
+#: the three proportions the bar draws. `todo` carries every page whose header
+#: has no `status` key — a page nobody has tagged is a page nobody has
+#: started. `unknown` carries every page there is no answer for yet.
+Coverage = namedtuple(
+	"Coverage",
+	"done wip todo unknown total done_fraction wip_fraction unknown_fraction",
+)
 
 
 def pages(entries):
@@ -64,16 +80,24 @@ def pages(entries):
 	]
 
 
-def flatten(entries, expanded=(), known=None):
+def flatten(entries, expanded=(), known=None, pending=()):
 	"""The visible rows, in draw order, for this listing and expansion set.
 
 	`.txt` files and all folders are shown, empty folders included; everything
 	else is silently ignored — no warning, no "unrecognised files" section.
+	`pending` is the pages the running walk has still to read: those are
+	`WALKING`, and any other page with no answer is `UNKNOWN`.
 	Everything is alphabetical, folders and pages in one alphabet, because the
 	proof-book is a folder a designer also browses in Finder.
 	"""
 	rows = []
-	_emit(_children_of(entries), "", 0, frozenset(expanded), known or {}, rows)
+	known = known or {}
+	pending = frozenset(pending)
+
+	def answer(path):
+		return _answer(path, known, pending)
+
+	_emit(_children_of(entries), "", 0, frozenset(expanded), answer, rows)
 	return rows
 
 
@@ -116,7 +140,21 @@ def _children_of(entries):
 	return root
 
 
-def _emit(children, prefix, depth, expanded, known, rows):
+def _answer(path, known, pending=frozenset()):
+	"""`(status, owner)` for one page — or a condition, when there is no status.
+
+	The one place a page's answer is decided: the rows and the coverage
+	count both ask here, so they cannot disagree about what is unknown.
+	"""
+	page = known.get(path)
+	if page is None:
+		return (WALKING if path in pending else UNKNOWN), None
+	if page.malformed:
+		return MALFORMED, None
+	return status.shown(page.status), page.owner
+
+
+def _emit(children, prefix, depth, expanded, answer, rows):
 	for name in sorted(children, key=lambda name: (name.casefold(), name)):
 		is_dir, grandchildren = children[name]
 		path = prefix + name
@@ -143,11 +181,11 @@ def _emit(children, prefix, depth, expanded, known, rows):
 					path + PATH_SEPARATOR,
 					depth + 1,
 					expanded,
-					known,
+					answer,
 					rows,
 				)
 		elif names.is_proof_page(name):
-			page = known.get(path, NOTHING_KNOWN)
+			shown, owner = answer(path)
 			rows.append(
 				Row(
 					path,
@@ -155,8 +193,8 @@ def _emit(children, prefix, depth, expanded, known, rows):
 					False,
 					name,
 					names.display_subject(names.subject(name)),
-					status.shown(page.status),
-					page.owner,
+					shown,
+					owner,
 					None,
 				)
 			)
@@ -170,29 +208,36 @@ def coverage(entries, known=None):
 	much as one in front of the designer. Coverage is the question the whole
 	product exists for, and it is not a question about what is on screen.
 
-	The two fractions are computed here rather than in the adapter because a
+	The three fractions are computed here rather than in the adapter because a
 	proof-book with no pages is the case that divides by zero, and deciding it
 	once, on the side of the seam a test can reach, is cheaper than trusting
-	the drawing code to remember.
+	the drawing code to remember. Everything with no status — unknown, still
+	walking, malformed — counts as unknown, and the total is the whole book.
 	"""
 	known = known or {}
 	counts = {value: 0 for value in status.STATUSES}
-	for entry in entries:
-		if entry.is_dir:
-			continue
-		name = entry.path.split(PATH_SEPARATOR)[-1]
-		if not names.is_proof_page(name):
-			continue
-		# A page with no `status` key counts as `todo`, exactly as it renders.
-		counts[status.shown(known.get(entry.path, NOTHING_KNOWN).status)] += 1
-	total = sum(counts.values())
+	unknown = 0
+	for entry in pages(entries):
+		shown, _ = _answer(entry.path, known)
+		if shown in counts:
+			# No `status` key counts as `todo`, exactly as it renders.
+			counts[shown] += 1
+		else:
+			unknown += 1
+	total = sum(counts.values()) + unknown
+
+	def fraction(count):
+		return count / total if total else 0.0
+
 	return Coverage(
 		counts[status.DONE],
 		counts[status.WIP],
 		counts[status.TODO],
+		unknown,
 		total,
-		counts[status.DONE] / total if total else 0.0,
-		counts[status.WIP] / total if total else 0.0,
+		fraction(counts[status.DONE]),
+		fraction(counts[status.WIP]),
+		fraction(unknown),
 	)
 
 
@@ -205,3 +250,14 @@ def coverage_caption(count):
 	if not count.total:
 		return None
 	return "%d of %d done" % (count.done, count.total)
+
+
+def unknown_caption(count):
+	"""`6 unknown` beside the count while anything is, or None (#41).
+
+	The denominator stays the whole book either way: the bar hatches what it
+	does not know rather than shrinking to what it does.
+	"""
+	if not count.unknown:
+		return None
+	return "%d unknown" % count.unknown
