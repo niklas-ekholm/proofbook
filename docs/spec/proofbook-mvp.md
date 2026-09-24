@@ -92,7 +92,7 @@ The extension is the membership test, and the only one: any `.txt` is a proof-pa
 - No version numbers. Versions belong to Glyphs files.
 - A legacy name such as `caps-WIP-NE.txt` is not parsed: its subject is *caps WIP NE* and it has no status. Nothing is migrated — rename such files by hand.
 
-**One file is one proof-page.** Two people working on the same subject own two files, `caps.txt` and `caps-mp.txt` say. Copy-and-rename to take over someone's page is a human agreement; the plugin does not enforce it.
+**One file is one proof-page.** Two people working on the same subject own two files, `caps.txt` and `caps-2.txt` say. Copy-and-rename to take over someone's page is a human agreement; the plugin does not enforce it.
 
 ### Frontmatter (ADR-0003)
 
@@ -111,13 +111,14 @@ handgloves
 A hand-rolled `Key: value` parser and writer, ~30 lines, shaped as **valid YAML** so editors highlight it. No import that can fail — `PyYAML` is absent from the Plugin Manager index entirely, and `tomllib` is read-only.
 
 - **Fences**: a header exists only if line 1 is exactly `---`, ending at the next `---`. Everything after is proof text, `---` lines included.
-- **Keys** (ADR-0006): `status` is `wip` or `done`, written lowercase and read in any case; `todo` is **never written** — a TODO page has no `status` key. `owner` is written uppercase, read in any case; the 1–4 letter limit is enforced by the UI, not the reader, so a hand-written `owner: Niklas Ekholm` is shown, truncated in the pill. An unrecognised value (`status: blocked`) reads as no status, not malformed. Status and owner are independent.
+- **Keys** (ADR-0006): `status` is `wip` or `done`, written lowercase and read in any case; `todo` is **never written** — a `todo` page has no `status` key. `owner` is written uppercase, read in any case; the 1–4 letter limit is enforced by the UI, not the reader, so a hand-written `owner: Niklas Ekholm` is shown, truncated in the pill. An unrecognised value (`status: blocked`) reads as no status, not malformed. Status and owner are independent.
+- **One header value, both ways** (#43): reading returns a `Document` carrying a `Header` — `status`, `owner`, `note`, `unknown` — and `write(data, header)` takes one back. A caller reads, `_replace`s the field it changes, and writes: read-modify-write, made explicit. `names` no longer has a `tagged` flag.
 - **Write strictly**: always `note: |` with 2-space-indented continuation lines. One form only. This keeps colons out of scalar position and de-fangs a note line reading `---`.
 - **Read leniently**: any consistent indent (strip the common prefix), or a one-line `note: value` (split on the first colon, value verbatim). Both normalise to canonical form on the next write.
 - Blank lines inside the note belong to it; leading and trailing ones are trimmed.
 - **Order on write**: `status`, `owner`, then **unknown keys preserved verbatim** in original order, then the note block always last. A write that sets a known key drops any unknown line bearing that key's name.
 - **Malformed** — no closing fence, bytes that are not UTF-8, or a known key written twice — means the whole file is proof text. The page is **untaggable**: the row shows the malformed swatch (§4), every header write refuses, and the note pane shows the broken header **read-only**. Never overwrite bytes you did not understand; never hide the page. The designer fixes it in a text editor.
-- **A header left with no keys is removed entirely**, fences included — an emptied note on a TODO, unowned page with no unknown keys.
+- **A header left with no keys is removed entirely**, fences included — an emptied note on a `todo`, unowned page with no unknown keys.
 - UTF-8 strict; BOM tolerated on read, dropped on write. **Preserve the file's dominant line ending.** The body passes through byte-for-byte — no whitespace tidying, no trailing-newline normalisation. A note edit must diff only the header.
 - No frontmatter at all is valid. A header with no proof text after it is also valid.
 
@@ -153,7 +154,7 @@ A proof-page row shows:
   | `wip` | amber |
   | `done` | green |
   | placeholder, status unknown | dashed grey outline |
-  | still walking — not yet read or validated | faint outline, pulsing (~1.1s) |
+  | still walking — not yet validated or read | faint outline, pulsing (~1.1s) |
   | malformed | warn-coloured outline, crossed |
 
   None of the last three may look like `todo`. Row anatomy never changes: size, position and the pill are the same in every state.
@@ -194,7 +195,7 @@ Neither empty state has a context menu.
 
 ## 5. Selection and the Edit view
 
-Selecting a proof-page strips the frontmatter and pushes the remaining text into the Edit view via `tab.text`.
+Selecting a proof-page strips the frontmatter and pushes the remaining text into the Edit view via `tab.text`. The header it parsed for the note pane also refreshes that page's status, owner and cache entry — the one read ProofBook knows happened.
 
 **The ProofBook tab**: if the current tab is one ProofBook opened **and still holds exactly what ProofBook put there**, its text is replaced; otherwise a new tab is opened (`font.newTab(text)`). ProofBook holds a reference to the tab it opened **and the exact text it pushed there** — both are needed for that test and for the refresh in §6. Use `tab.redraw()`, not `forceRedraw()`.
 
@@ -240,20 +241,20 @@ A note commit and a tag both rewrite the whole header, so **every header write h
 
 **No read that could block on a network ever happens on the main thread, and the tree never reads a placeholder.** A cold placeholder read does not fail offline, it **hangs** (#38), so there is no failure to catch: ProofBook decides before reading.
 
-- Placeholders carry the **`SF_DATALESS`** flag (`0x40000000`) in `os.lstat().st_flags`. Statting does not trigger a download (3011 Google Drive files in 0.2s). Plain Python — no PyObjC, no per-provider code.
-- The tree's statuses come from the status cache (§3), validated by that same `lstat`. A dataless book opened before on this machine shows every status with no downloads; one never opened shows every row as a placeholder.
+- Placeholders carry the **`SF_DATALESS`** flag (`0x40000000`) in `os.lstat().st_flags`. Statting does not trigger a download (3011 Google Drive files in 0.2s). Plain Python — no PyObjC, no per-provider code. It is the only flag the listing reads.
+- The tree's statuses come from the status cache (§3), validated by that same `lstat`. A cloud-synced book opened before on this machine shows every status with no downloads; one never opened shows every placeholder's status as unknown.
 - **Bulk download is explicit, never automatic.** A one-line hint above the tree, shown only while true: *"18 of 24 pages not downloaded — Download all"*. It counts **placeholders only** — a malformed or unreadable page is not in it — so it reaches zero when the download finishes, and it is the remedy for unknown statuses too. It becomes a progress readout — *"downloading 42 of 300…"* — with a **Cancel** that sets a flag the worker checks between files. No modal sheet. The scope of "all" is the whole proof-book recursively, collapsed folders included.
-- **Selection routes by the flag**: a materialised file is read inline; a dataless one goes through the worker, and the Edit view updates when it lands.
+- **Selection routes by the flag**: a materialised file is read inline; a placeholder is read on **its own short-lived thread**, under the same cap and deadline as a tag (below), and the Edit view updates when it lands.
 - **Failure on selection**: a `vanilla.dialogs` message naming the file — *"Could not read `caps.txt`; it may not be downloaded yet"* — and the **ProofBook tab is left untouched**. The row stays selected.
 - **A failed read during a refresh** is silent and uncounted: nobody asked a question, and one unreadable file would otherwise alert on every become-key.
 - **Failure during bulk download** never aborts the run; the worker continues and reports a count: *"downloaded 280 of 300; 20 failed"*.
-- A scan during a download simply runs; rows flipping from dataless to local **is** the progress feedback. The one thing that cancels the worker is the proof-book changing underneath it — a different font focused, or Save As.
+- A scan during a download simply runs; rows flipping from placeholder to local **is** the progress feedback. The one thing that cancels the worker is the proof-book changing underneath it — a different font focused, or Save As.
 
 **Tagging a placeholder downloads it** (#42): one page is implicit, many pages is a question.
 
 - A swatch click or a context-menu status/owner verb on a placeholder downloads and tags it. The row updates optimistically, and the read fills the cache.
 - The read runs on **its own short-lived thread**, never the shared worker queue — one offline click would otherwise wedge every read for the session. A second tag on a page already in flight is refused; concurrent tag-reads are **capped** at a small number, and past the cap ProofBook refuses with the reason rather than queueing.
-- **The deadline is on the notification, not the read.** No completion in ~10s and ProofBook says *"«caps» could not be downloaded, so it was not tagged."* and the row reverts. The thread may leak; the designer is not lied to.
+- **The deadline is on the notification, not the read.** No completion in ~10s and ProofBook says the page could not be downloaded, so it was not tagged. **The attempt is abandoned**: the row reverts at once, and if the read finishes later it only fills the cache — it never writes. The thread may leak; the notice stays true.
 - A placeholder that turns out malformed once downloaded is refused with the reason and the row reverts.
 - **Bulk tagging asks first**, naming how many pages need downloading (§8).
 
@@ -265,11 +266,11 @@ A note can only be edited on a selected page, which routing has therefore materi
 
 ### The status swatch
 
-Clicking it cycles `TODO → WIP → DONE`, which writes the `status` key (§6, *Header writes*). Tagging is the highest-frequency action and earns a direct target. A misclick is undone by another click or two around the cycle.
+Clicking it cycles `todo → wip → done`, which writes the `status` key (§6, *Header writes*). Tagging is the highest-frequency action and earns a direct target. A misclick is undone by another click or two around the cycle.
 
-**No implicit owner**: clicking the swatch on a TODO page writes `status: wip` and nothing else. One click stays one click, with no dialog ambushing it.
+**No implicit owner**: clicking the swatch on a `todo` page writes `status: wip` and nothing else. One click stays one click, with no dialog ambushing it.
 
-On a **malformed** page the swatch refuses, with the reason, once, on the click — *"The header of «caps» can't be read, so it can't be tagged. Fix it in a text editor."* On a **placeholder** it downloads and tags (§7). On a row **still walking**, the click waits on nothing: the tag reads the file itself, by the same routing.
+On a **malformed** page the swatch refuses, with the reason, once, on the click, in the note pane's voice. On a **placeholder** it downloads and tags (§7). On a row **still walking**, the click waits on nothing: the tag reads the file itself, by the same routing.
 
 *(**Verified in Glyphs 4** under ADR-0001's renaming. The target and tag-is-not-a-selection findings carry over to header writes; the collision half no longer applies to tagging. The swatch cycled and renamed on a real proof-book, the tree and the coverage bar redraw without leaving the window, and the owner pill survives a tag. Four things the reasoning could not settle on its own. **The target is the whole marker column**, not the 9pt circle inside it — the circle is a target a trackpad misses, and the rest of the column is empty. **A tag is not a selection**: the click stops at the cell and never reaches the table, so tagging a row leaves the selection and the Edit view exactly as they were; under §6's rule a tab holding the designer's own text would otherwise earn a new tab per tag. **A folder row still toggles** — it has no status to cycle. And the **collision dialog was walked on a case-only collision**, `dup-WIP.txt` cycling onto an existing `Dup-DONE.txt`: on a case-insensitive volume the rename would otherwise have taken that file with it. *Cancel* left both alone; *Save new* produced one renamed file and never touched the one in the way.)*
 
@@ -282,7 +283,7 @@ On a **malformed** page the swatch refuses, with the reason, once, on the click 
 ```
 caps                              <- target header, disabled
 --------------------------------
-Status                        >   TODO / WIP / DONE, current one check-marked
+Status                        >   todo / wip / done, current one check-marked
 Set owner                     >
 Edit note                         (or "Add note" when there is none)
 --------------------------------
@@ -296,7 +297,7 @@ Reveal in Finder
 Move to Trash
 ```
 
-- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `TODO → DONE`, and the menu is where a designer discovers what the swatch does at all.
+- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `todo → done`, and the menu is where a designer discovers what the swatch does at all.
 - **Rename** opens a `vanilla.dialogs` modal on the subject, prefilled, **showing the resulting filename**. No inline cell editing.
 - **Move to** is a submenu of the proof-book's folders, indented, plus the root. No `NSOpenPanel` — a destination outside the proof-book is not offerable. The current parent is **greyed, not omitted**. The item is disabled when the list would be empty.
 - **Duplicate** copies the text and **resets every claim**: removes the `status`, `owner` and `note` keys, **keeps unknown keys verbatim**, and suffixes the subject (`caps-2.txt`). A fixed rule that clears is not a guess; a new file never inherits a progress claim. On a malformed page it is **disabled** — the claims cannot be reset in a header ProofBook cannot parse.
@@ -325,9 +326,9 @@ Move to Trash
 ```
 
 - The bulk verbs are **recursive**. Their submenus are the page-row ones with **no check-marks** — a folder has no current value.
-- **They confirm, with a count**: *"Set 14 proof-pages in `caps` to `DONE`?"*. A bulk re-tag is the only action in ProofBook with **no undo at all** — a header write leaves nothing in the Trash. When the folder holds placeholders, the confirmation also names how many pages must be downloaded first (§7).
-- **Malformed pages in a bulk re-tag are skipped and reported**: *"Set 11 proof-pages. 3 skipped — their headers can't be read."* The confirmation counts them too. Never a modal per file, and one broken file never refuses the whole folder.
-- **Duplicating a folder** is a recursive copy applying the same reset throughout: every copied page lands `TODO`, no owner, no note, unknown keys kept. A malformed page inside is copied **byte for byte** and counted in a report afterwards, rather than stopping the copy. The copy is named `caps-2`.
+- **They confirm, with a count**: *"Set 14 proof-pages in `caps` to `done`?"*. A bulk re-tag is the only action in ProofBook with **no undo at all** — a header write leaves nothing in the Trash. When the folder holds placeholders, the confirmation also names how many pages must be downloaded first (§7).
+- **Malformed pages in a bulk re-tag are skipped and reported**: The report names how many were skipped and why, and the confirmation counts them too. Never a modal per file, and one broken file never refuses the whole folder.
+- **Duplicating a folder** is a recursive copy applying the same reset throughout: every copied page lands `todo`, no owner, no note, unknown keys kept. A malformed page inside is copied **byte for byte** and counted in a report afterwards, rather than stopping the copy. The copy is named `caps-2`.
 
 **Empty space / no selection:**
 
@@ -345,7 +346,7 @@ No header. **Empty space always targets the root**, regardless of what is expand
 - **One collision behaviour everywhere.** Rename, move and duplicate all raise the same modal (tagging no longer renames, so it cannot collide): ***Save new*** or ***Cancel***. Never overwrite, never merge. *Save new* is a **rename, not a copy** — still one file — with a numeric suffix appended to the subject: `caps.txt` → `caps-2.txt`, incrementing until free, so the page sorts adjacent to its sibling. The dialog names both filenames: the one in the way, and the one that will be written. Folder-on-folder collisions yield `caps-2` and the two stay separate.
 - **Deletion** uses `NSFileManager.trashItemAtURL_`, never `os.remove`. The item reads *Move to Trash*, not *Delete*. **No confirmation** — the Trash is the confirmation.
 - **Except**: deleting a folder confirms when the folder holds **anything at all on disk**, not just proof-pages. A folder that looks empty in the tree can take a `.glyphs` file to the Trash with it. Phrase the count in proof-pages, plus "and other files" when ignored files are present. An empty folder still deletes unconfirmed.
-- **A malformed header disables every header operation.** *Status*, *Set owner*, *Edit note* and *Duplicate* are **shown disabled**, each reading *Header unreadable — fix it in a text editor*. *Rename*, *Move to*, *Reveal in Finder* and *Move to Trash* are filename operations and stay live. Hiding the disabled items would read as a bug, and they are where a designer learns why the page will not take a tag.
+- **A malformed header disables every header operation.** *Status*, *Set owner*, *Edit note* and *Duplicate* are **shown disabled**, each saying the header is unreadable and is fixed in a text editor. *Rename*, *Move to*, *Reveal in Finder* and *Move to Trash* are filename operations and stay live. Hiding the disabled items would read as a bug, and they are where a designer learns why the page will not take a tag.
 
 ---
 

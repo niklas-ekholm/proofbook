@@ -1,5 +1,8 @@
 # Proof-page frontmatter is a hand-rolled YAML subset
 
+> **Amended by [ADR-0006](0006-proof-page-metadata-lives-in-the-frontmatter.md)** (2026-09-24):
+> the header now carries `status` and `owner` as well as the note.
+
 A proof-page's metadata — its note, and since ADR-0006 its status and owner — lives in a `---`-fenced header at the top of the file, written by ProofBook with a parser and writer of its own — roughly thirty lines, no imports. The header is shaped as valid YAML (`note: |` with 2-space-indented lines) so that editors highlight it and a human reads a format they already know, but nothing parses it except ProofBook and a person.
 
 ## Considered options

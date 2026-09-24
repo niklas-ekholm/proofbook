@@ -17,11 +17,11 @@ The Glyphs 4 palette plugin that browses a proof-book and displays a proof-page 
 _Avoid_: the plugin, the tool
 
 **status**:
-A proof-page's design progress, one of `todo`, `wip`, or `done`. A proof-page that has never been touched is `todo`. A proof-page whose status has not been read has no known status, which is not `todo`.
+A proof-page's design progress, one of `todo`, `wip`, or `done`. A proof-page that has never been touched is `todo`; one whose status ProofBook does not know has no status, which is not `todo`.
 _Avoid_: state, stage, progress, phase
 
 **placeholder**:
-A proof-page whose file the cloud provider has not downloaded. Its status and owner cannot be read without downloading it, so they are **unknown** — which is not the same as `todo`: `todo` is an answer, and this is the absence of one.
+A proof-page whose file the cloud provider has not downloaded. Reading it downloads it.
 _Avoid_: stub, ghost, missing, unloaded, dataless file
 
 **note**:

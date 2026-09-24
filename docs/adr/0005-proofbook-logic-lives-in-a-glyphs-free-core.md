@@ -1,5 +1,11 @@
 # ProofBook's logic lives in a Glyphs-free core
 
+> **Amended by [ADR-0006](0006-proof-page-metadata-lives-in-the-frontmatter.md)** (2026-09-24).
+> The seam stands. What the core does has changed: there is no filename grammar
+> to parse — the filename is the subject — and the core gains the status cache's
+> staleness decision and the header's `status` and `owner` keys. Where this ADR
+> names `<subject>-<STATUS>-<OWNER>.txt` or `caps-2-DONE-NE.txt`, read spec §2.
+
 ProofBook is split in two. A **core** package imports nothing from `GlyphsApp`, `AppKit` or `vanilla` and performs no syscalls: it parses and formats filenames, reads and writes the frontmatter header, flattens a directory listing into display rows, resolves collisions, and decides which paths are dataless. A thin **adapter** — the `PalettePlugin` subclass and its vanilla view — supplies the core with data, performs the file operations the core asks for, owns the worker thread, and draws.
 
 The core is exercised by a `unittest` suite that runs under plain `python3`, with no Glyphs, no install step, and no filesystem.
