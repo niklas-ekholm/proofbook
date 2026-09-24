@@ -420,6 +420,13 @@ def _save_cache(book, pages):
 		_debug("could not save the status cache:\n%s" % traceback.format_exc())
 
 
+def _untaggable(name):
+	return (
+		"The header of “%s” is not readable, so it was not tagged. "
+		"Fix it in a text editor." % name
+	)
+
+
 def _not_downloaded(name):
 	return "Could not read “%s”; it may not be downloaded yet." % name
 
@@ -1562,43 +1569,59 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def tagPage(self, path):
-		"""A click on a proof-page's swatch: cycle its status (spec §8).
+		"""A click on a proof-page's swatch: cycle its status (spec §8)."""
+		self._retag(
+			path,
+			tagging.cycled,
+			lambda known: known._replace(status=status.next_stored(known.status)),
+		)
 
-		Status lives in the header (ADR-0006), so this rewrites the file in
-		place — it never renames, and never collides. The bytes are read at
-		the moment of writing, on the main thread, so a note committed a
-		moment ago is in them and survives (spec §6, *Header writes*). What
-		they become is the core's decision; this reads and writes.
+	@objc.python_method
+	def _retag(self, path, change, predict):
+		"""Rewrite one page's header by `change`: the swatch, and later the menu.
 
-		A placeholder is refused rather than read: reading one blocks Glyphs
-		until it downloads, and forever offline (#38). Downloading it on the
-		click, off the main thread, is #49's.
+		Status lives in the header (ADR-0006), so a tag rewrites the file in
+		place — it never renames, and never collides. `change` takes the
+		page's bytes to the bytes to write, or None for a header it cannot
+		parse. `predict` takes what the row shows to what it will show, for
+		the optimistic row on a page that has to download first (#40).
+
+		A downloaded page is tagged here and now, on the main thread. A
+		placeholder is downloaded first, on a thread of its own (#42): one
+		page is implicit, many pages is a question.
+		"""
+		before = _stat(self._page_path(path))
+		if before[0]:
+			self._retag_placeholder(path, change, predict)
+			return
+		self._retag_inline(path, change, before)
+
+	@objc.python_method
+	def _retag_inline(self, path, change, before):
+		"""Tag a downloaded page: read, change, write, all at the click.
+
+		The bytes are read at the moment of writing, on the main thread, so
+		a note committed a moment ago is in them and survives (spec §6,
+		*Header writes*). What they become is the core's decision.
 		"""
 		filepath = self._page_path(path)
-		name = os.path.basename(filepath)
-		before = _stat(filepath)
-		if before[0]:
-			self._alert("“%s” is not downloaded yet, so it was not tagged." % name)
-			return
+		name = _name(filepath)
 		try:
 			source = _read_bytes(filepath)
 		except OSError as error:
 			self._alert("Could not read “%s”, so it was not tagged: %s" % (name, error))
 			self._resolve()
 			return
-		data = tagging.cycled(source)
+		data = change(source)
 		if data is None:
 			# Refused, once, on the click, in the note pane's voice: a page
 			# whose header ProofBook cannot parse is untaggable (ADR-0006).
-			self._alert(
-				"The header of “%s” is not readable, so it was not tagged. "
-				"Fix it in a text editor." % name
-			)
+			self._alert(_untaggable(name))
 			return
 		if data != source and self._replace(filepath, data, "Could not tag “%s”" % name):
 			# The row shows the new status at once (#40), and keeps showing
-			# it against any walk that started before the write.
-			# Our own write, so the stat after it is the one to stamp.
+			# it against any walk that started before the write. Our own
+			# write, so the stat after it is the one to stamp.
 			after = _stat(filepath)
 			known = self._learned(path, frontmatter.read(data), after)
 			if before[1] is not None and after[1] is not None:
@@ -1607,6 +1630,89 @@ class ProofBookPalette(PalettePlugin):
 				)
 		# ProofBook's own write, so the tree is refreshed (spec §6).
 		self._resolve()
+
+	@objc.python_method
+	def _retag_placeholder(self, path, change, predict):
+		"""Tag a page the provider has not downloaded (#42, spec §7).
+
+		The row changes on the click, from what the cache says it is now; the
+		page downloads on a thread of its own; and when it lands, the tag is
+		made on the main thread from a fresh read, exactly as for a page that
+		was already local. Offline the read hangs rather than failing, so the
+		deadline is on the notice: past it the attempt is **abandoned** — the
+		row reverts, and a read that lands later only fills the cache.
+		"""
+		name = _name(self._page_path(path))
+		book = self.bookPath
+		previous = self.known.get(path)
+		if previous is not None and previous.malformed:
+			self._alert(_untaggable(name))
+			return
+		if previous is not None:
+			self.known[path] = predict(previous)
+			self._draw()
+		answer = self._fetch(
+			path,
+			lambda data, stat, wanted: self._placeholder_tagged(
+				book, path, change, previous, data, stat, wanted
+			),
+			lambda: self._tag_abandoned(
+				path,
+				previous,
+				"“%s” could not be downloaded, so it was not tagged." % name,
+			),
+		)
+		if answer == reading.BUSY:
+			self._tag_abandoned(
+				path, previous, "“%s” is still downloading, so it was not tagged again." % name
+			)
+		elif answer == reading.FULL:
+			self._tag_abandoned(
+				path,
+				previous,
+				"Too many pages are downloading at once, so “%s” was not tagged. "
+				"The network may not be answering." % name,
+			)
+
+	@objc.python_method
+	def _tag_abandoned(self, path, previous, message):
+		"""Put the row back as it was, and say why it did not change."""
+		if previous is None:
+			self.known.pop(path, None)
+		else:
+			self.known[path] = previous
+		self._draw()
+		self._alert(message)
+
+	@objc.python_method
+	def _placeholder_tagged(self, book, path, change, previous, data, stat, wanted):
+		"""The placeholder a tag was waiting on landed, or failed, or came too late."""
+		if book != self.bookPath:
+			return  # Read for a proof-book this palette is no longer showing.
+		document = None
+		if data is not None:
+			# Wanted or not, it is read: the cache has it (#42).
+			document = frontmatter.read(data)
+			self._learned(path, document, stat)
+		if not wanted:
+			# Abandoned; the row was reverted and the designer told. What
+			# landed only fills in what the row shows now.
+			self._draw()
+			return
+		name = _name(self._page_path(path))
+		if document is None:
+			self._tag_abandoned(
+				path, previous, "“%s” could not be downloaded, so it was not tagged." % name
+			)
+			return
+		if document.malformed:
+			# Downloading it does not make an unreadable header taggable.
+			self._draw()
+			self._alert(_untaggable(name))
+			return
+		# On disk now: tagged from a fresh read, by the same path as any
+		# local page, so a note committed meanwhile is in the bytes it writes.
+		self._retag_inline(path, change, _stat(self._page_path(path)))
 
 	# The collision path below has no caller while tagging writes in place
 	# (ADR-0006). It is kept, tested, for *Rename…* and *Move to* (#23),
