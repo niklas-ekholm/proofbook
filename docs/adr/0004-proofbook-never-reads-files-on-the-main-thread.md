@@ -5,9 +5,10 @@
 > ADR-0001 — *the tree reads no file contents at all* — because status and
 > owner now live inside the file. The tree fills in status from a cache
 > re-validated by `lstat` and from reads of materialised pages on the worker;
-> it never reads a placeholder to fill itself in. Issue #25, postponed on 2026-09-06, is reopened as
-> a prerequisite; until it lands ProofBook still reads inline on the main
-> thread. The passages below that ADR-0006 overturned are marked in place.
+> it never reads a placeholder to fill itself in. Issue #25, postponed on
+> 2026-09-06, was reopened as a prerequisite and has landed: the gate, the
+> worker and the bulk download are built, not yet verified in Glyphs. The
+> passages below that ADR-0006 overturned are marked in place.
 
 A proof-book often lives in Dropbox, Google Drive or iCloud Drive, where files are **placeholders**: reading one triggers a synchronous download that blocks for seconds online and, offline, indefinitely (#38). ProofBook therefore holds one invariant: **no read that could block on a network ever happens on the main thread.** A file the `SF_DATALESS` flag says is materialised may be read inline; every other read goes through a background thread. *(Originally also: "the tree reads no file contents at all", built from a directory listing and the filename grammar alone. ADR-0006 retired that half — see the banner.)*
 

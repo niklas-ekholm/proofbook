@@ -29,7 +29,9 @@ PATH_SEPARATOR = "/"
 #: One entry from the adapter's walk of the proof-book. A folder needs no
 #: listing of its own to appear: `flatten` infers the parents of every path it
 #: is given, so an adapter that yields only files still draws the tree.
-Entry = namedtuple("Entry", "path is_dir")
+#: `dataless` is the `SF_DATALESS` flag from `lstat`: a placeholder, which
+#: must never be read to fill in the tree (ADR-0004).
+Entry = namedtuple("Entry", "path is_dir dataless", defaults=(False,))
 
 #: What is known about one page's header: its stored status (None is `todo`),
 #: its owner as written, and whether the header could be read at all.

@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import os
 import platform
+import queue
 import sys
+import threading
+import traceback
 
 import objc
 from AppKit import (
@@ -79,6 +82,7 @@ from proofbook import (  # noqa: E402
 	frontmatter,
 	names,
 	ops,
+	reading,
 	status,
 	tagging,
 	tree,
@@ -240,6 +244,26 @@ NOTE_TEMP_SUFFIX = ".proofbook-note"
 # Statting never downloads; reading does, and offline it hangs (#38).
 SF_DATALESS = 0x40000000
 
+# How long a single-page placeholder read may run before ProofBook says it did
+# not happen (#42). The read itself cannot be timed out — there is no portable
+# timeout on a blocking read — so the deadline is on the notice, and the
+# attempt is abandoned: whatever the read brings back later is not used.
+READ_DEADLINE = 10.0
+
+# How long one file of a bulk download may block before the run counts it as
+# failed and moves on. A file that never answers must not stall the rest.
+DOWNLOAD_FILE_TIMEOUT = 30.0
+
+# The one opt-in debug switch (spec §9): off, and logging to the Macro Panel
+# when on. Not a logging framework.
+PROOFBOOK_DEBUG = False
+
+# The download line above the tree: its text, then its button beneath it —
+# the palette is too narrow for both on one line.
+HINT_TEXT_HEIGHT = 14
+HINT_BUTTON_HEIGHT = 18
+HINT_HEIGHT = HINT_TEXT_HEIGHT + HINT_BUTTON_HEIGHT + 4
+
 
 def _ceiling_height(window=None):
 	"""The tallest the palette may be on the screen it is on right now.
@@ -273,6 +297,94 @@ def _report_lines():
 		"Python %s" % platform.python_version(),
 		"vanilla: %s" % ("yes" if vanilla is not None else "MISSING"),
 	]
+
+
+def _debug(message):
+	if PROOFBOOK_DEBUG:
+		print("ProofBook: %s" % message)
+
+
+def _read_bytes(filepath):
+	"""A file's bytes. Safe on any thread; blocks on a placeholder until it lands."""
+	with open(filepath, "rb") as handle:
+		return handle.read()
+
+
+def _is_placeholder(filepath):
+	"""Is this file a placeholder? `lstat` answers without downloading it.
+
+	A file that will not stat is not a placeholder: whatever reads it next
+	finds out why, with an error it can report.
+	"""
+	try:
+		return bool(os.lstat(filepath).st_flags & SF_DATALESS)
+	except OSError:
+		return False
+
+
+def _read_within(filepath, timeout):
+	"""Read a file on a thread of its own, giving up on it after `timeout`.
+
+	True if the bytes arrived. A read that hangs is left to finish or not on
+	its own daemon thread: there is no cancelling a blocked read, only not
+	waiting for it.
+	"""
+	landed = []
+
+	def read():
+		try:
+			_read_bytes(filepath)
+			landed.append(True)
+		except OSError:
+			pass
+
+	thread = threading.Thread(target=read, name="ProofBook download", daemon=True)
+	thread.start()
+	thread.join(timeout)
+	return bool(landed)
+
+
+class _Worker:
+	"""The one shared background queue: listing walks, one at a time, in order.
+
+	Nothing that can hang goes on it. A placeholder read would wedge it for the
+	session (#42), so single-page reads and the bulk download each get their
+	own threads instead; everything here is a stat or a read of a file already
+	on disk.
+	"""
+
+	def __init__(self):
+		self.jobs = queue.Queue()
+		self.thread = None
+
+	def submit(self, job):
+		if self.thread is None:
+			self.thread = threading.Thread(
+				target=self._run, name="ProofBook worker", daemon=True
+			)
+			self.thread.start()
+		self.jobs.put(job)
+
+	def stop(self):
+		self.jobs.put(None)
+
+	def _run(self):
+		while True:
+			job = self.jobs.get()
+			if job is None:
+				return
+			job()
+
+
+class _Download:
+	"""One bulk download run. The Cancel flag is checked between files."""
+
+	def __init__(self, book, paths):
+		self.book = book
+		self.paths = paths
+		self.done = 0
+		self.failed = 0
+		self.cancelled = False
 
 
 # Drawing. Every colour is asked for at draw time and never cached: these are
@@ -918,6 +1030,21 @@ class ProofBookPalette(PalettePlugin):
 		# What each page's header says, by path — status and owner live in
 		# the file now (ADR-0006), so the listing alone cannot draw a row.
 		self.known = {}
+		# The listing is walked on the worker (spec §6). Each walk carries a
+		# generation, and only the latest one's result is drawn: an older walk
+		# landing late is about a proof-book, or a moment, that has gone.
+		self.worker = _Worker()
+		self.walkGeneration = 0
+		self.walking = False
+		self.walkAgain = False
+		# Single-page placeholder reads (spec §7): one per page, capped, each
+		# with a deadline; `expiries` is what each one says when it passes.
+		self.flights = reading.Flights()
+		self.expiries = {}
+		# The bulk download in progress, if any, and whether the line above
+		# the tree is taking space from it.
+		self.download = None
+		self.hintShown = False
 		self.rows = []
 		self.expanded = set()
 		self.selectedPath = None
@@ -1029,6 +1156,32 @@ class ProofBookPalette(PalettePlugin):
 			sizeStyle="small",
 		)
 		group.coverageCaption.show(False)
+		# The download line (spec §7): shown only while something is a
+		# placeholder, or while a download runs. It pushes the tree down
+		# rather than covering it.
+		group.downloadHint = vanilla.TextBox(
+			(
+				PALETTE_MARGIN - TEXT_FIELD_INSET,
+				TREE_TOP,
+				-PALETTE_MARGIN,
+				HINT_TEXT_HEIGHT,
+			),
+			"",
+			sizeStyle="small",
+		)
+		group.downloadHint.show(False)
+		group.downloadButton = vanilla.Button(
+			(
+				PALETTE_MARGIN - TEXT_FIELD_INSET,
+				TREE_TOP + HINT_TEXT_HEIGHT + 2,
+				-PALETTE_MARGIN,
+				HINT_BUTTON_HEIGHT,
+			),
+			"",
+			sizeStyle="mini",
+			callback=self.downloadAll,
+		)
+		group.downloadButton.show(False)
 		# One column, one cell class: the row draws its own swatch, subject
 		# and owner pill. Sorting is off because the core already ordered the
 		# rows, and a header would only offer to undo that.
@@ -1093,7 +1246,8 @@ class ProofBookPalette(PalettePlugin):
 		pane = NOTE_HEADER_HEIGHT
 		if not self.noteCollapsed:
 			pane += NOTE_EDITOR_HEIGHT
-		group.tree.setPosSize((0, TREE_TOP, 0, -pane))
+		top = TREE_TOP + (HINT_HEIGHT if self.hintShown else 0)
+		group.tree.setPosSize((0, top, 0, -pane))
 		group.noteHeader.setPosSize((0, -pane, 0, NOTE_HEADER_HEIGHT))
 		group.noteHeader.setCollapsed(self.noteCollapsed)
 		group.noteEditor.setPosSize(
@@ -1189,6 +1343,52 @@ class ProofBookPalette(PalettePlugin):
 		Glyphs.removeCallback(self.documentWasSaved)
 		NSNotificationCenter.defaultCenter().removeObserver_(self)
 		NSObject.cancelPreviousPerformRequestsWithTarget_(self)
+		# Threads are daemons and cannot be stopped mid-read; they are told
+		# the palette is gone, and whatever they land is dropped.
+		self.worker.stop()
+		if self.download is not None:
+			self.download.cancelled = True
+
+	# -- Off the main thread ---------------------------------------------
+
+	def mainLanded_(self, payload):
+		"""A background result, delivered on the main thread."""
+		function, arguments = payload
+		function(*arguments)
+
+	@objc.python_method
+	def _on_main(self, function, *arguments):
+		"""Hand a result back to the main thread, which owns every view."""
+		self.performSelectorOnMainThread_withObject_waitUntilDone_(
+			"mainLanded:", (function, arguments), False
+		)
+
+	@objc.python_method
+	def _background(self, work, landed, *arguments):
+		"""A job for a background thread: `work` there, `landed` back here.
+
+		**Every failure comes back too** (spec §9): an exception on a
+		background thread otherwise vanishes, and a palette that silently
+		stops updating is worse than one that says why.
+		"""
+
+		def job():
+			try:
+				result = work(*arguments)
+			except Exception:
+				self._on_main(self._background_failed, traceback.format_exc())
+				return
+			self._on_main(landed, result)
+
+		return job
+
+	@objc.python_method
+	def _background_failed(self, trace):
+		print("ProofBook: a background task failed.\n%s" % trace)
+		self._alert(
+			"ProofBook hit an error in the background: %s"
+			% trace.strip().splitlines()[-1]
+		)
 
 	# -- Glyphs and AppKit callbacks -------------------------------------
 
@@ -1292,14 +1492,11 @@ class ProofBookPalette(PalettePlugin):
 		"""
 		filepath = self._page_path(path)
 		name = os.path.basename(filepath)
+		if _is_placeholder(filepath):
+			self._alert("“%s” is not downloaded yet, so it was not tagged." % name)
+			return
 		try:
-			if os.lstat(filepath).st_flags & SF_DATALESS:
-				self._alert(
-					"“%s” is not downloaded yet, so it was not tagged." % name
-				)
-				return
-			with open(filepath, "rb") as handle:
-				source = handle.read()
+			source = _read_bytes(filepath)
 		except OSError as error:
 			self._alert("Could not read “%s”, so it was not tagged: %s" % (name, error))
 			self._resolve()
@@ -1403,6 +1600,9 @@ class ProofBookPalette(PalettePlugin):
 		ADR-0003 accepts is string work, and string work belongs on the side
 		of the seam a test can reach.
 		"""
+		if _is_placeholder(self._page_path(path)):
+			self._display_placeholder(path)
+			return
 		document = self._read_page(path)
 		if document is None:
 			# The Edit view is left exactly as it is and the row stays
@@ -1422,24 +1622,111 @@ class ProofBookPalette(PalettePlugin):
 		self._show_note(path, document)
 
 	@objc.python_method
+	def _display_placeholder(self, path):
+		"""Select a page the provider has not downloaded (spec §7).
+
+		Read on a thread of its own, never inline: reading a placeholder
+		blocks until it downloads, and forever offline (#38). The pane waits,
+		empty and read-only, and the Edit view is left as it is until the
+		page lands. If it has not in `READ_DEADLINE`, ProofBook says so and
+		the attempt is abandoned.
+		"""
+		name = os.path.basename(self._page_path(path))
+		self._show_note(path, None)
+		answer = self._fetch(
+			path,
+			lambda data, wanted: self._placeholder_displayed(path, data, wanted),
+			lambda: self._alert(
+				"Could not read “%s”; it may not be downloaded yet." % name
+			),
+		)
+		if answer == reading.BUSY:
+			self._alert("“%s” is still downloading." % name)
+		elif answer == reading.FULL:
+			self._alert(
+				"Too many pages are downloading at once, so “%s” was not "
+				"opened. The network may not be answering." % name
+			)
+
+	@objc.python_method
+	def _placeholder_displayed(self, path, data, wanted):
+		"""The selected placeholder landed, or failed, or came too late."""
+		if not wanted:
+			return  # Abandoned: the designer was told it did not happen.
+		name = os.path.basename(self._page_path(path))
+		if data is None:
+			self._alert("Could not read “%s”; it may not be downloaded yet." % name)
+			return
+		if self.selectedPath != path:
+			return  # The designer has moved on; it is on disk for next time.
+		document = frontmatter.read(data)
+		self._push_text(document.text)
+		self._show_note(path, document)
+		# It is on disk now: the listing, the hint and its status all moved.
+		self._resolve()
+
+	@objc.python_method
+	def _fetch(self, path, landed, expired):
+		"""Read one placeholder on a thread of its own (spec §7, #42).
+
+		Never the shared worker: offline, the read hangs, and one hung read
+		on a serial queue stops every read after it for the session. Capped,
+		and one per page, so "nothing is happening, click again" cannot
+		become a thread per click; `reading.Flights` keeps that count.
+
+		`landed(data, wanted)` runs on the main thread when the read returns
+		— `data` None if it failed, `wanted` False if its deadline passed
+		first. `expired()` runs when the deadline passes. The answer is
+		`reading.ADMITTED`, or why it was not.
+		"""
+		answer = self.flights.admit(path)
+		if answer != reading.ADMITTED:
+			return answer
+		filepath = self._page_path(path)
+
+		def read():
+			try:
+				data = _read_bytes(filepath)
+			except OSError:
+				data = None
+			self._on_main(self._fetched, path, data, landed)
+
+		threading.Thread(target=read, name="ProofBook read", daemon=True).start()
+		self.expiries[path] = expired
+		self.performSelector_withObject_afterDelay_(
+			"fetchExpired:", path, READ_DEADLINE
+		)
+		return answer
+
+	def fetchExpired_(self, path):
+		if self.flights.abandon(path):
+			expired = self.expiries.pop(path, None)
+			if expired is not None:
+				expired()
+
+	@objc.python_method
+	def _fetched(self, path, data, landed):
+		NSObject.cancelPreviousPerformRequestsWithTarget_selector_object_(
+			self, "fetchExpired:", path
+		)
+		self.expiries.pop(path, None)
+		landed(data, self.flights.land(path))
+
+	@objc.python_method
 	def _read_page(self, path):
-		"""A proof-page read into its proof text and its note, or None.
+		"""A downloaded proof-page read into its text and header, or None.
 
-		None means it did not read at all.
-
-		This read is inline and on the main thread, and is **not routed**:
-		ADR-0004 allows an inline read only for a file that is already
-		materialised, and nothing here asks. Reading a page that a cloud
-		provider is holding as a placeholder therefore blocks Glyphs until it
-		downloads. The `SF_DATALESS` check and the worker thread that would
-		route it were postponed indefinitely — ADR-0004's own banner records
-		it — and this is the read they would take, both callers of it, the
-		selection and the refresh.
+		None means it did not read — or is a placeholder, which this never
+		reads: the read is inline and on the main thread, and a placeholder
+		read blocks Glyphs until it downloads (ADR-0004). The selection
+		routes a placeholder to its own thread before it gets here; the
+		refresh, which is nobody's question, simply leaves it.
 		"""
 		filepath = self._page_path(path)
+		if _is_placeholder(filepath):
+			return None
 		try:
-			with open(filepath, "rb") as handle:
-				data = handle.read()
+			data = _read_bytes(filepath)
 		except OSError:
 			return None
 		return frontmatter.read(data)
@@ -1620,9 +1907,17 @@ class ProofBookPalette(PalettePlugin):
 	def _write_note(self, draft):
 		"""The commit itself, once there is something to write."""
 		filepath = self._page_path(self.notePath)
+		if _is_placeholder(filepath):
+			# Evicted since it was selected. Reading it here would block the
+			# commit — a window switch — on a download; the draft is kept,
+			# and the next commit point tries again.
+			self._alert(
+				"“%s” is not downloaded any more, so the note was not saved yet."
+				% os.path.basename(filepath)
+			)
+			return
 		try:
-			with open(filepath, "rb") as handle:
-				source = handle.read()
+			source = _read_bytes(filepath)
 		except FileNotFoundError:
 			self._drop_draft(
 				"“%s” is gone, so the note was not saved."
@@ -1808,8 +2103,55 @@ class ProofBookPalette(PalettePlugin):
 			self.bookPath = book
 			self.expanded = set()
 			self.selectedPath = None
-		self.entries = self._listing(book) if book else []
-		self.known = self._headers(book, self.entries) if book else {}
+			self.entries = []
+			self.known = {}
+			# The proof-book changed underneath the download, which is the
+			# one thing that cancels it (spec §7).
+			if self.download is not None:
+				self.download.cancelled = True
+				self.download = None
+		self.walkGeneration += 1
+		if book is None:
+			self._listed((None, self.walkGeneration, [], {}))
+			return
+		# The previous listing is drawn while the walk runs: never blank,
+		# only one refresh stale (#40).
+		self._draw()
+		if self.walking:
+			self.walkAgain = True
+			return
+		self._walk_later(book)
+
+	@objc.python_method
+	def _walk_later(self, book):
+		self.walking = True
+		self.worker.submit(
+			self._background(self._walk, self._listed, book, self.walkGeneration)
+		)
+
+	@objc.python_method
+	def _walk(self, book, generation):
+		"""The listing and every downloaded page's header. On the worker."""
+		entries = self._listing(book)
+		return book, generation, entries, self._headers(book, entries)
+
+	@objc.python_method
+	def _listed(self, result):
+		"""A walk landed. Draw it, unless something newer has been asked for."""
+		book, generation, entries, known = result
+		if book is not None:
+			self.walking = False
+			if self.walkAgain and self.bookPath is not None:
+				# Asked for again while this one ran: this result is already
+				# stale, and the next walk is the one worth drawing.
+				self.walkAgain = False
+				self._walk_later(self.bookPath)
+				return
+			self.walkAgain = False
+		if generation != self.walkGeneration or book != self.bookPath:
+			return
+		self.entries = entries
+		self.known = known
 		# A page that has left the listing takes the selection with it — and
 		# nothing else: the Edit view is left exactly as it is, because
 		# deleting a file must not blank a tab that may still be being read
@@ -1825,12 +2167,12 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _listing(self, root):
-		"""Walk the proof-book into the entries the core flattens.
+		"""Walk the proof-book into the entries the core flattens. On the worker.
 
-		Names only — no file is opened and none of this decides membership;
-		that is the core's job. The walk is recursive whatever is expanded,
-		because the coverage count and the bulk verbs are about the whole
-		proof-book, not the visible part of it.
+		Names and `lstat` only — no file is opened, and statting never
+		downloads. `SF_DATALESS` is the one flag read (spec §7). The walk is
+		recursive whatever is expanded, because the coverage count and the
+		bulk verbs are about the whole proof-book, not the visible part.
 		"""
 		entries = []
 		for dirpath, dirnames, filenames in os.walk(root):
@@ -1839,32 +2181,31 @@ class ProofBookPalette(PalettePlugin):
 			for name in dirnames:
 				entries.append(tree.Entry(prefix + name, True))
 			for name in filenames:
-				entries.append(tree.Entry(prefix + name, False))
+				dataless = _is_placeholder(os.path.join(dirpath, name))
+				entries.append(tree.Entry(prefix + name, False, dataless))
 		return entries
 
 	@objc.python_method
 	def _headers(self, root, entries):
 		"""What each page's header says, for the tree and the coverage.
 
-		Every downloaded page is read, inline, on every refresh — the status
-		cache (#47) and the worker (#25) replace this. A **placeholder is
-		never read**: the `SF_DATALESS` flag comes from `lstat`, which does
-		not download, and a placeholder read would block Glyphs until it did,
-		or forever offline (#38). Such a page is drawn `todo` until then.
+		On the worker, with the listing. Every downloaded page is read on
+		every walk — the status cache (#47) replaces that. A **placeholder is
+		never read**: the listing's `SF_DATALESS` flag says which they are,
+		and a placeholder read blocks until it downloads, or forever offline
+		(#38). Such a page is drawn `todo` until then.
 
 		A page that will not read is left out, and is drawn `todo` too; a
 		refresh is nobody's question, so it is not an alert (spec §7).
 		"""
 		known = {}
 		for entry in entries:
-			if entry.is_dir or not names.is_proof_page(entry.path):
+			if entry.is_dir or entry.dataless or not names.is_proof_page(entry.path):
 				continue
-			filepath = os.path.join(root, entry.path)
 			try:
-				if os.lstat(filepath).st_flags & SF_DATALESS:
-					continue
-				with open(filepath, "rb") as handle:
-					document = frontmatter.read(handle.read())
+				document = frontmatter.read(
+					_read_bytes(os.path.join(root, entry.path))
+				)
 			except OSError:
 				continue
 			header = document.header
@@ -1887,9 +2228,13 @@ class ProofBookPalette(PalettePlugin):
 			group.createButton.show(False)
 			group.tree.show(True)
 			group.noteHeader.show(True)
+			self._draw_hint()
 			self._layout_note()
 			self._draw_tree()
 			return
+		self.hintShown = False
+		group.downloadHint.show(False)
+		group.downloadButton.show(False)
 		# Neither empty state has a tree, a coverage bar or a context menu:
 		# an empty state is where the title and explanation are drawn, and
 		# they occupy the same strip the coverage does.
@@ -1952,6 +2297,81 @@ class ProofBookPalette(PalettePlugin):
 		group.coverageCaption.set(caption)
 		group.coverage.show(True)
 		group.coverageCaption.show(True)
+
+	@objc.python_method
+	def _draw_hint(self):
+		"""The download line: shown only while it is true (spec §7)."""
+		group = self.paletteView.group
+		if self.download is not None:
+			text = reading.progress(
+				self.download.done + self.download.failed, len(self.download.paths)
+			)
+			button = "Cancel"
+		else:
+			text = reading.hint(self.entries)
+			button = "Download all"
+		self.hintShown = text is not None
+		group.downloadHint.show(self.hintShown)
+		group.downloadButton.show(self.hintShown)
+		if self.hintShown:
+			group.downloadHint.set(text)
+			group.downloadButton.setTitle(button)
+
+	@objc.python_method
+	def downloadAll(self, sender):
+		"""*Download all*, or *Cancel* while a download runs (spec §7).
+
+		Explicit, never automatic: ProofBook reads a folder it does not own.
+		The run has a thread of its own rather than the worker's queue, so the
+		listing keeps walking while it goes — rows flipping from placeholder
+		to local **is** the progress readout.
+		"""
+		if self.download is not None:
+			self.download.cancelled = True
+			return
+		paths = reading.to_download(self.entries)
+		if not paths or self.bookPath is None:
+			return
+		run = self.download = _Download(self.bookPath, paths)
+		threading.Thread(
+			target=self._background(self._downloading, self._downloaded, run),
+			name="ProofBook download all",
+			daemon=True,
+		).start()
+		self._draw()
+
+	@objc.python_method
+	def _downloading(self, run):
+		"""The bulk download itself, on its own thread. Returns the run."""
+		for path in run.paths:
+			if run.cancelled:
+				break
+			if _read_within(os.path.join(run.book, path), DOWNLOAD_FILE_TIMEOUT):
+				run.done += 1
+			else:
+				# Never aborts the run: counted, and the next file goes.
+				run.failed += 1
+			_debug("downloaded %s" % path)
+			self._on_main(self._download_progressed, run)
+		return run
+
+	@objc.python_method
+	def _download_progressed(self, run):
+		if run is not self.download:
+			return
+		# The resolve draws the new count, and walks the listing so the rows
+		# that landed stop being placeholders.
+		self._resolve()
+
+	@objc.python_method
+	def _downloaded(self, run):
+		"""The run stopped: finished, cancelled, or the proof-book changed."""
+		if run is self.download:
+			self.download = None
+		if run.failed:
+			self._alert(reading.report(run.done, run.failed, len(run.paths)))
+		if run.book == self.bookPath:
+			self._resolve()
 
 	@objc.python_method
 	def _alert(self, message):

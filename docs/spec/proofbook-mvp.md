@@ -235,9 +235,14 @@ A note commit and a tag both rewrite the whole header, so **every header write h
 
 ## 7. Cloud storage (ADR-0004)
 
-> **Not yet built**: issue #25, reopened by map #37 as a prerequisite, builds the
-> routing, the worker and the status cache. Until it lands, reads are inline
-> and on the main thread.
+> **Built in #25** (the gate, the worker, placeholder selection and the bulk
+> download) — **not yet verified in Glyphs**. The status cache is #47's.
+
+The download line is two rows above the tree — the count, then a mini
+*Download all* / *Cancel* button beneath it — because the palette is too
+narrow for both on one line. A bulk run that ends with failures says so in an
+alert with the count; a clean run says nothing, because the line disappearing
+is the answer.
 
 **No read that could block on a network ever happens on the main thread, and the tree never reads a placeholder.** A cold placeholder read does not fail offline, it **hangs** (#38), so there is no failure to catch: ProofBook decides before reading.
 
