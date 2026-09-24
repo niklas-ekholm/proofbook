@@ -30,6 +30,7 @@ from collections import namedtuple
 import objc
 from AppKit import (
 	NSAttributedString,
+	NSMenuItem,
 	NSBackgroundStyleEmphasized,
 	NSBezierPath,
 	NSColor,
@@ -84,6 +85,7 @@ from proofbook import (  # noqa: E402
 	discovery,
 	edit,
 	frontmatter,
+	menus,
 	names,
 	ops,
 	reading,
@@ -247,6 +249,10 @@ NOTE_TEMP_SUFFIX = ".proofbook-note"
 # The flag a cloud provider sets on a placeholder, from `lstat` (ADR-0004).
 # Statting never downloads; reading does, and offline it hangs (#38).
 SF_DATALESS = 0x40000000
+
+# The last owner set from the context menu, offered first in every proof-book
+# (spec §8). Global, not per book: it is the designer's own initials, usually.
+LAST_OWNER_KEY = "com.niklasekholm.ProofBookPalette.LastOwner"
 
 # How long a single-page placeholder read may run before ProofBook says it did
 # not happen (#42). The read itself cannot be timed out — there is no portable
@@ -1389,6 +1395,7 @@ class ProofBookPalette(PalettePlugin):
 			alternatingRowColors=False,
 			drawFocusRing=False,
 			selectionCallback=self.treeSelectionChanged,
+			menuCallback=self.treeMenu,
 		)
 		# The swatch click is not a selection — it must not become one — so
 		# it cannot arrive through selectionCallback. The row view reaches
@@ -1668,6 +1675,146 @@ class ProofBookPalette(PalettePlugin):
 			return
 		self.expanded = tree.toggled(self.expanded, row.path)
 		self._draw_tree()
+
+	# -- The context menu -------------------------------------------------
+
+	@objc.python_method
+	def treeMenu(self, sender):
+		"""The menu for the row under the cursor (spec §8, #22).
+
+		**It targets the clicked row and never changes the selection or the
+		Edit view**: a right-click that selected would replace the tab being
+		read to show a menu. `clickedRow`, not the selection, is the target,
+		and the menu's first item names it.
+
+		Folder rows and empty space have their own menus (#24); for now they
+		have none.
+		"""
+		index = sender.getNSTableView().clickedRow()
+		if index < 0 or index >= len(self.rows) or self.rows[index].is_dir:
+			return None
+		row = self.rows[index]
+		# A placeholder is not read to build a menu, and a header that will not
+		# parse says nothing about a note: either way it is not known.
+		document = self._read_page(row.path)
+		has_note = None
+		if document is not None and not document.malformed:
+			has_note = bool(document.header.note)
+		model = menus.page_menu(
+			row,
+			menus.owners(self.known),
+			Glyphs.defaults[LAST_OWNER_KEY],
+			has_note,
+		)
+		return self._menu_items(model, row.path)
+
+	@objc.python_method
+	def _menu_items(self, model, path):
+		"""The core's menu model as vanilla's items, each bound to its verb.
+
+		An item with no action is disabled by having no action: `NSMenu`
+		enables every item with a target of its own accord, so an
+		`enabled` flag would be overruled. The reason a header operation is
+		disabled rides as its tooltip.
+		"""
+		items = []
+		for item in model:
+			if item is menus.SEPARATOR or item.title == menus.SEPARATOR.title:
+				items.append("----")
+				continue
+			if item.action is None and not item.items:
+				disabled = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+					item.title, None, ""
+				)
+				if item.tooltip:
+					disabled.setToolTip_(item.tooltip)
+				items.append(disabled)
+				continue
+			entry = {"title": item.title}
+			if item.action is not None:
+				entry["callback"] = self._menu_callback(path, item.action)
+			if item.checked:
+				entry["state"] = 1
+			if item.items:
+				entry["items"] = self._menu_items(item.items, path)
+			items.append(entry)
+		return items
+
+	@objc.python_method
+	def _menu_callback(self, path, action):
+		return lambda sender: self._menu_chose(path, action)
+
+	@objc.python_method
+	def _menu_chose(self, path, action):
+		"""Carry out a menu verb on its target row."""
+		verb = action[0]
+		if verb == menus.SET_STATUS:
+			# The swatch's operation exactly (#42): same read, same write,
+			# same download on a placeholder.
+			self._retag(path, *tagging.setting(status=action[1]))
+		elif verb == menus.SET_OWNER:
+			self._set_owner(path, action[1])
+		elif verb == menus.NEW_OWNER:
+			owner = self._ask_owner()
+			if owner is not None:
+				self._set_owner(path, owner)
+		elif verb == menus.EDIT_NOTE:
+			self._edit_note(path)
+
+	@objc.python_method
+	def _set_owner(self, path, owner):
+		"""Set, or with None clear, a page's owner; remember the last one set."""
+		if owner is not None:
+			Glyphs.defaults[LAST_OWNER_KEY] = owner.upper()
+		self._retag(path, *tagging.setting(owner=owner))
+
+	@objc.python_method
+	def _ask_owner(self):
+		"""*New owner…*: one to four letters, or a message saying why not.
+
+		Rejected rather than silently mangled, and **never guessed** — no
+		macOS full name, no git `user.name` (spec §8).
+		"""
+		if dialogs is None:
+			return None
+		field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 200, 24))
+		field.setPlaceholderString_("Initials, e.g. NE")
+		answer = dialogs.ask(
+			"New owner",
+			"One to four letters: the initials of the person responsible.",
+			buttonTitles=[("Set owner", SAVE_NEW), ("Cancel", CANCEL)],
+			accessoryView=field,
+		)
+		if answer != SAVE_NEW:
+			return None
+		text = field.stringValue().strip()
+		if not status.is_owner(text):
+			self._alert(
+				"“%s” is not an owner: one to four letters, nothing else." % text
+			)
+			return None
+		return text.upper()
+
+	@objc.python_method
+	def _edit_note(self, path):
+		"""*Edit note*: select the target, open the pane, and put the cursor in it.
+
+		The one verb that selects: the designer asked to write on this page,
+		and the pane only ever holds the selected page's note. It selects the
+		ordinary way, so the draft on the page before is committed first.
+		"""
+		if vanilla is None:
+			return
+		indexes = [index for index, row in enumerate(self.rows) if row.path == path]
+		if not indexes:
+			return
+		group = self.paletteView.group
+		group.tree.setSelectedIndexes(indexes)
+		if self.noteCollapsed:
+			self._toggle_note_pane()
+		view = group.noteEditor.getNSTextView()
+		if view.window() is not None:
+			view.window().makeFirstResponder_(view)
 
 	# -- Tagging ----------------------------------------------------------
 

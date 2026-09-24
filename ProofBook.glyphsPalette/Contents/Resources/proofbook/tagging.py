@@ -36,3 +36,28 @@ def predicted(known):
 	cannot disagree about which status comes next.
 	"""
 	return known._replace(status=status.next_stored(known.status))
+
+
+def setting(**fields):
+	"""The change and its prediction for setting `status` or `owner` outright.
+
+	The context menu's verbs (#22) are the swatch's operation with a value
+	chosen rather than cycled: the same read, the same write, the same
+	download on a placeholder. `status="todo"` removes the key; `owner=None`
+	clears it.
+	"""
+	if "status" in fields:
+		fields["status"] = status.stored(status.recognised(fields["status"]) or status.TODO)
+	if fields.get("owner") is not None:
+		fields["owner"] = status.written_owner(fields["owner"])
+
+	def change(data):
+		document = frontmatter.read(data)
+		if document.malformed:
+			return None
+		return frontmatter.write(data, document.header._replace(**fields))
+
+	def predict(known):
+		return known._replace(**fields)
+
+	return change, predict
