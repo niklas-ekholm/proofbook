@@ -35,6 +35,25 @@ def filename(subject):
 	return subject + EXTENSION
 
 
+def typed_subject(text):
+	"""`(subject, None)` for what a designer typed, or `(None, why not)`.
+
+	Trimmed, and a typed `.txt` is not doubled. Refused: nothing at all, a
+	leading dot — Finder hides it, and so would the palette — and the two
+	characters a filename on macOS cannot hold.
+	"""
+	subject = text.strip()
+	if subject.lower().endswith(EXTENSION):
+		subject = subject[: -len(EXTENSION)].strip()
+	if not subject:
+		return None, "A proof-page needs a subject."
+	if subject.startswith("."):
+		return None, "A subject cannot start with a dot; the file would be hidden."
+	if "/" in subject or ":" in subject:
+		return None, "A subject cannot contain “/” or “:”."
+	return subject, None
+
+
 def display_subject(subject):
 	"""The subject as the palette draws it: hyphens rendered as spaces."""
 	return subject.replace(SEGMENT_SEPARATOR, " ")

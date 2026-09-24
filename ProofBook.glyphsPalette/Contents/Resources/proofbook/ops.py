@@ -28,8 +28,9 @@ from . import intents, names, tree
 FIRST_SUFFIX = 2
 
 #: `blocking` is the entry in the way, at the case the listing reported — the
-#: dialog names it, so it must read as it does in Finder. `rename` is what
-#: *Save new* performs; *Cancel* performs nothing.
+#: dialog names it, so it must read as it does in Finder. `rename` is the
+#: intent *Save new* performs — a rename, a copy or a new page; *Cancel*
+#: performs nothing.
 Collision = namedtuple("Collision", "blocking rename")
 
 #: `rename` is None for a plan with nothing to do and for a collision;
@@ -38,6 +39,9 @@ Collision = namedtuple("Collision", "blocking rename")
 Plan = namedtuple("Plan", "rename collision")
 
 NOTHING_TO_DO = Plan(None, None)
+
+# `_planned`'s default: ignore the entry being moved when looking for a clash.
+_SOURCE = object()
 
 
 def resolved(collision, save_new):
@@ -52,6 +56,63 @@ def resolved(collision, save_new):
 	return Plan(collision.rename, None) if save_new else NOTHING_TO_DO
 
 
+def rename(path, subject, entries):
+	"""*Rename…*: the page under a new subject, in the folder it is in."""
+	return move(path, _join(parent(path), names.filename(subject)), entries)
+
+
+def move_into(path, folder, entries):
+	"""*Move to*: the page, under its own name, in another folder ("" the root)."""
+	return move(path, _join(folder, _split(path)[1]), entries)
+
+
+def duplicate(path, entries):
+	"""*Duplicate*: a copy beside the page, its subject suffixed (`caps-2.txt`).
+
+	The first suffix is proposed, not searched for: when it is taken, that is
+	a collision like any other, and *Save new* counts on from it.
+	"""
+	folder, filename = _split(path)
+	suffix = FIRST_SUFFIX
+	destination = _join(folder, _suffixed(filename, suffix))
+	# A duplicate of `caps-2` is `caps-3`: the suffix is the subject's own
+	# number counted on, never the source itself.
+	while destination.casefold() == path.casefold():
+		suffix += 1
+		destination = _join(folder, _suffixed(filename, suffix))
+	return _planned(intents.Copy, path, destination, entries, ignoring=None)
+
+
+def new_page(folder, subject, entries):
+	"""*New proof-page*: an empty page with this subject, in this folder."""
+	destination = _join(folder, names.filename(subject))
+	taken = _taken(entries, folder)
+	blocking = taken.get(destination.casefold())
+	if blocking is None:
+		return Plan(intents.Create(destination), None)
+	return Plan(None, Collision(blocking, intents.Create(_free(destination, taken))))
+
+
+def folders(entries):
+	"""`(folder, depth)` for the root and every folder, in the tree's order.
+
+	*Move to*'s destinations (spec §8): the proof-book's folders, indented,
+	plus the root. Nothing outside the proof-book is offerable.
+	"""
+	found = set()
+	for entry in entries:
+		parts = entry.path.split(tree.PATH_SEPARATOR)
+		for end in range(1, len(parts) if not entry.is_dir else len(parts) + 1):
+			found.add(tree.PATH_SEPARATOR.join(parts[:end]))
+	ordered = sorted(found, key=lambda path: [part.casefold() for part in path.split("/")])
+	return [("", 0)] + [(path, path.count(tree.PATH_SEPARATOR) + 1) for path in ordered]
+
+
+def parent(path):
+	"""The folder a page is in; "" at the root."""
+	return _split(path)[0]
+
+
 def move(path, destination, entries):
 	"""Plan the rename that puts this entry at that path, or report the way blocked.
 
@@ -60,14 +121,22 @@ def move(path, destination, entries):
 	"""
 	if destination == path:
 		return NOTHING_TO_DO
-	taken = _taken(entries, _split(destination)[0], ignoring=path)
+	return _planned(intents.Rename, path, destination, entries)
+
+
+def _planned(intent, path, destination, entries, ignoring=_SOURCE):
+	"""`intent(path, destination)`, or a collision offering the next free name.
+
+	A rename or a move ignores the source — nothing collides with itself,
+	which is what lets a rename change only case. A copy does not: the source
+	is still there afterwards.
+	"""
+	ignoring = path if ignoring is _SOURCE else ignoring
+	taken = _taken(entries, _split(destination)[0], ignoring=ignoring)
 	blocking = taken.get(destination.casefold())
 	if blocking is None:
-		return Plan(intents.Rename(path, destination), None)
-	return Plan(
-		None,
-		Collision(blocking, intents.Rename(path, _free(destination, taken))),
-	)
+		return Plan(intent(path, destination), None)
+	return Plan(None, Collision(blocking, intent(path, _free(destination, taken))))
 
 
 def _free(destination, taken):

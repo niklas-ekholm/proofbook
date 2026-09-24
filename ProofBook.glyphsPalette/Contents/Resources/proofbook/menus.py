@@ -25,6 +25,18 @@ SET_STATUS = "set status"
 SET_OWNER = "set owner"
 NEW_OWNER = "new owner"
 EDIT_NOTE = "edit note"
+RENAME = "rename"
+MOVE_TO = "move to"
+DUPLICATE = "duplicate"
+NEW_PAGE = "new page"
+REVEAL = "reveal"
+TRASH = "trash"
+
+#: What *Move to* calls the proof-book's own top level.
+ROOT_TITLE = "proofbook"
+
+#: One level of *Move to*'s indentation.
+INDENT = "    "
 
 #: How long the header naming the target may be before its middle goes.
 HEADER_LIMIT = 30
@@ -70,17 +82,19 @@ def has_note(document):
 	return bool(document.header.note)
 
 
-def page_menu(row, discovered, last_owner, has_note):
+def page_menu(row, discovered, last_owner, has_note, folders=()):
 	"""The menu for a proof-page row.
 
 	`discovered` is `owners(...)` for the book; `last_owner` the global last
 	owner set, or None; `has_note` whether the page has a note, or None when
-	that is not known — a placeholder is not read to build a menu.
+	that is not known — a placeholder is not read to build a menu. `folders`
+	is `ops.folders(...)`: *Move to*'s destinations.
 	"""
 	header = Item(middle_truncated(row.subject))
 	note_title = "Add note" if has_note is False else "Edit note"
-	if row.status == tree.MALFORMED:
-		return [
+	malformed = row.status == tree.MALFORMED
+	if malformed:
+		metadata = [
 			header,
 			Item(HEADER_UNREADABLE),
 			SEPARATOR,
@@ -88,12 +102,49 @@ def page_menu(row, discovered, last_owner, has_note):
 			Item("Set owner", tooltip=HEADER_UNREADABLE),
 			Item(note_title, tooltip=HEADER_UNREADABLE),
 		]
+	else:
+		metadata = [
+			header,
+			SEPARATOR,
+			Item("Status", items=tuple(_statuses(row))),
+			Item("Set owner", items=tuple(_owners(row, discovered, last_owner))),
+			Item(note_title, (EDIT_NOTE,)),
+		]
+	return metadata + _file_verbs(row, folders, malformed)
+
+
+def _file_verbs(row, folders, malformed):
+	"""Rename, move, duplicate, new, reveal, trash (#23): filename operations.
+
+	They stay live on a malformed page — the header is not theirs to read —
+	except *Duplicate*, whose copy has to reset claims in a header ProofBook
+	cannot parse.
+	"""
+	parent = row.path.rpartition(tree.PATH_SEPARATOR)[0]
+	destinations = [
+		Item(
+			INDENT * depth + (folder.rpartition(tree.PATH_SEPARATOR)[2] or ROOT_TITLE),
+			None if folder == parent else (MOVE_TO, folder),
+		)
+		for folder, depth in folders
+	]
+	elsewhere = any(item.action for item in destinations)
+	if malformed:
+		duplicate = Item("Duplicate", tooltip=HEADER_UNREADABLE)
+	else:
+		duplicate = Item("Duplicate", (DUPLICATE,))
 	return [
-		header,
 		SEPARATOR,
-		Item("Status", items=tuple(_statuses(row))),
-		Item("Set owner", items=tuple(_owners(row, discovered, last_owner))),
-		Item(note_title, (EDIT_NOTE,)),
+		Item("Rename…", (RENAME,)),
+		# The current parent is greyed, not omitted; the item is disabled
+		# when greying it would leave nowhere to go (spec §8).
+		Item("Move to", items=tuple(destinations) if elsewhere else ()),
+		duplicate,
+		SEPARATOR,
+		Item("New proof-page", (NEW_PAGE, parent)),
+		SEPARATOR,
+		Item("Reveal in Finder", (REVEAL,)),
+		Item("Move to Trash", (TRASH,)),
 	]
 
 

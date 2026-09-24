@@ -158,3 +158,77 @@ class Move(unittest.TestCase):
 		)
 		self.assertEqual(plan.collision.blocking, "caps")
 		self.assertEqual(plan.collision.rename.destination, "caps-2")
+
+
+class Renaming(unittest.TestCase):
+	"""*Rename…* edits the subject; the folder and the header stay put."""
+
+	def test_a_page_is_renamed_in_its_own_folder(self):
+		plan = ops.rename("latin/caps.txt", "small-caps", listing("latin/", "latin/caps.txt"))
+		self.assertEqual(plan.rename, intents.Rename("latin/caps.txt", "latin/small-caps.txt"))
+
+	def test_a_taken_subject_collides(self):
+		plan = ops.rename("a.txt", "caps", listing("a.txt", "caps.txt"))
+		self.assertEqual(plan.collision.blocking, "caps.txt")
+		self.assertEqual(plan.collision.rename.destination, "caps-2.txt")
+
+	def test_the_same_subject_is_nothing_to_do(self):
+		self.assertEqual(ops.rename("caps.txt", "caps", listing("caps.txt")), ops.NOTHING_TO_DO)
+
+
+class Duplicating(unittest.TestCase):
+	"""*Duplicate* writes a copy beside the page, its subject suffixed."""
+
+	def test_the_copy_is_the_subject_suffixed(self):
+		plan = ops.duplicate("latin/caps.txt", listing("latin/", "latin/caps.txt"))
+		self.assertEqual(plan.rename, intents.Copy("latin/caps.txt", "latin/caps-2.txt"))
+
+	def test_a_duplicate_of_a_duplicate_counts_on(self):
+		plan = ops.duplicate("caps-2.txt", listing("caps.txt", "caps-2.txt"))
+		self.assertEqual(plan.rename.destination, "caps-3.txt")
+
+	def test_a_taken_suffix_collides_and_offers_the_next(self):
+		# The one collision behaviour, reused: never overwrite, ask.
+		plan = ops.duplicate("caps.txt", listing("caps.txt", "caps-2.txt"))
+		self.assertEqual(plan.collision.blocking, "caps-2.txt")
+		self.assertEqual(plan.collision.rename, intents.Copy("caps.txt", "caps-3.txt"))
+
+	def test_save_new_performs_the_copy(self):
+		collision = ops.duplicate("caps.txt", listing("caps.txt", "caps-2.txt")).collision
+		self.assertEqual(ops.resolved(collision, True).rename.destination, "caps-3.txt")
+
+
+class NewPages(unittest.TestCase):
+	def test_a_new_page_is_created_in_the_folder(self):
+		plan = ops.new_page("latin", "caps", listing("latin/"))
+		self.assertEqual(plan.rename, intents.Create("latin/caps.txt"))
+
+	def test_a_new_page_at_the_root(self):
+		self.assertEqual(ops.new_page("", "caps", []).rename, intents.Create("caps.txt"))
+
+	def test_a_taken_subject_collides(self):
+		plan = ops.new_page("", "caps", listing("caps.txt"))
+		self.assertEqual(plan.collision.rename, intents.Create("caps-2.txt"))
+
+
+class MoveTargets(unittest.TestCase):
+	def test_every_folder_and_the_root_in_tree_order_with_depths(self):
+		entries = listing("latin/", "latin/caps/", "greek/", "a.txt", "latin/caps/b.txt")
+		self.assertEqual(
+			ops.folders(entries),
+			[("", 0), ("greek", 1), ("latin", 1), ("latin/caps", 2)],
+		)
+
+	def test_the_parent_of_a_page(self):
+		self.assertEqual(ops.parent("latin/caps.txt"), "latin")
+		self.assertEqual(ops.parent("caps.txt"), "")
+
+	def test_a_page_moves_under_its_own_name(self):
+		plan = ops.move_into(
+			"latin/caps.txt", "greek", listing("latin/", "greek/", "latin/caps.txt")
+		)
+		self.assertEqual(plan.rename, intents.Rename("latin/caps.txt", "greek/caps.txt"))
+
+	def test_a_page_moves_to_the_root(self):
+		plan = ops.move_into("latin/caps.txt", "", listing("latin/", "latin/caps.txt"))
+		self.assertEqual(plan.rename.destination, "caps.txt")

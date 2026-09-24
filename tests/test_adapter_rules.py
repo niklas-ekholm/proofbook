@@ -364,6 +364,38 @@ class AdapterRules(unittest.TestCase):
 			pysource.called_names(pysource.function(self.adapter, "treeMenu")),
 		)
 
+	def test_a_page_goes_to_the_trash_never_to_nothing(self):
+		# Spec §8: the Trash is the confirmation, so there is no dialog — and
+		# nothing ProofBook deletes is beyond the designer's reach.
+		trash = pysource.function(self.adapter, "_trash")
+		called = pysource.called_names(trash)
+		self.assertTrue(
+			[
+				node
+				for node in ast.walk(trash)
+				if isinstance(node, ast.Attribute) and node.attr.startswith("trashItemAtURL")
+			]
+		)
+		self.assertNotIn("os.remove", pysource.called_names(self.adapter))
+		self.assertNotIn("dialogs.ask", called)
+
+	def test_a_copy_or_a_new_page_never_overwrites(self):
+		create = pysource.function(self.adapter, "_create")
+		modes = [
+			node.args[1].value
+			for node in ast.walk(create)
+			if isinstance(node, ast.Call)
+			and pysource.dotted_name(node.func) == "open"
+			and len(node.args) > 1
+			and isinstance(node.args[1], ast.Constant)
+		]
+		self.assertEqual(modes, ["xb"])
+
+	def test_a_rename_carries_what_is_known_about_the_page(self):
+		self.assertIn(
+			"self._carry", pysource.called_names(pysource.function(self.adapter, "_rename"))
+		)
+
 	def test_the_menus_status_verb_is_the_swatchs_operation(self):
 		# #42: same read, same write, same download on a placeholder.
 		self.assertIn(

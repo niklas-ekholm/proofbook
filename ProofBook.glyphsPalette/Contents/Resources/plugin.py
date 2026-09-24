@@ -61,6 +61,7 @@ from AppKit import (
 	NSViewWidthSizable,
 	NSWindowDidBecomeKeyNotification,
 	NSWindowDidResignKeyNotification,
+	NSWorkspace,
 )
 from Foundation import NSFileManager, NSObject, NSURL, NSZeroRect
 from GlyphsApp import DOCUMENTWASSAVED, Glyphs
@@ -86,6 +87,7 @@ from proofbook import (  # noqa: E402
 	discovery,
 	edit,
 	frontmatter,
+	intents,
 	menus,
 	names,
 	ops,
@@ -668,6 +670,25 @@ def _capsule(rect):
 	return NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
 		rect, radius, radius
 	)
+
+
+class ProofBookSubjectWatcher(NSObject):
+	"""Keeps the subject dialog's filename line in step with its field.
+
+	*Rename…* shows the resulting filename as it is typed (spec §8), so the
+	name on disk is never a surprise; the same line says why a subject that
+	cannot be one is refused.
+	"""
+
+	def controlTextDidChange_(self, notification):
+		self.proofbookRefresh()
+
+	@objc.python_method
+	def proofbookRefresh(self):
+		subject, problem = names.typed_subject(self.proofbookField.stringValue())
+		self.proofbookLabel.setStringValue_(
+			problem if subject is None else "→ " + names.filename(subject)
+		)
 
 
 class ProofBookRowView(NSView):
@@ -1710,6 +1731,7 @@ class ProofBookPalette(PalettePlugin):
 			menus.owners(settled),
 			Glyphs.defaults[LAST_OWNER_KEY],
 			menus.has_note(document),
+			ops.folders(self.entries),
 		)
 		return self._menu_items(model, row.path)
 
@@ -1772,7 +1794,150 @@ class ProofBookPalette(PalettePlugin):
 			menus.SET_OWNER: self._set_owner,
 			menus.NEW_OWNER: self._new_owner,
 			menus.EDIT_NOTE: self._edit_note,
+			menus.RENAME: self._rename_page,
+			menus.MOVE_TO: self._move_page,
+			menus.DUPLICATE: self._duplicate_page,
+			menus.NEW_PAGE: lambda path, folder: self._new_page(folder),
+			menus.REVEAL: self._reveal,
+			menus.TRASH: self._trash,
 		}[verb](path, *value)
+
+	# -- The file verbs (#23) --------------------------------------------
+
+	@objc.python_method
+	def _rename_page(self, path):
+		"""*Rename…*: a modal on the subject, showing the filename it makes."""
+		current = names.subject(path.rpartition(tree.PATH_SEPARATOR)[2])
+		subject = self._ask_subject("Rename", "The proof-page’s new subject.", current, "Rename")
+		if subject is not None:
+			self._perform(ops.rename(path, subject, self.entries))
+
+	@objc.python_method
+	def _move_page(self, path, folder):
+		"""*Move to*: under its own name, into another folder of this proof-book."""
+		self._perform(ops.move_into(path, folder, self.entries))
+
+	@objc.python_method
+	def _new_page(self, folder):
+		"""*New proof-page*: an empty page, named by the designer, in `folder`."""
+		subject = self._ask_subject(
+			"New proof-page", "What the page is about.", "", "Create"
+		)
+		if subject is not None:
+			self._perform(ops.new_page(folder, subject, self.entries))
+
+	@objc.python_method
+	def _duplicate_page(self, path):
+		"""*Duplicate*: a copy with every claim reset, beside the page (spec §8).
+
+		The copy's bytes are the source's, so a placeholder is downloaded
+		first — on a thread of its own, like any single-page read (#42).
+		"""
+		filepath = self._page_path(path)
+		name = _name(filepath)
+		if not _is_placeholder(filepath):
+			try:
+				source = _read_bytes(filepath)
+			except OSError as error:
+				self._alert("Could not read “%s”, so it was not duplicated: %s" % (name, error))
+				return
+			self._duplicate_from(path, source)
+			return
+		book = self.bookPath
+
+		def landed(data, stat, wanted):
+			self._landed_placeholder(book, path, data, stat)
+			if not wanted or book != self.bookPath:
+				return
+			if data is None:
+				self._alert(_not_downloaded(name))
+				return
+			self._duplicate_from(path, data)
+
+		answer = self._fetch(
+			path,
+			landed,
+			lambda: self._alert(
+				"“%s” could not be downloaded, so it was not duplicated." % name
+			),
+		)
+		if answer != reading.ADMITTED:
+			self._alert(_refused(answer, name, "duplicated"))
+
+	@objc.python_method
+	def _duplicate_from(self, path, source):
+		data = tagging.reset(source)
+		if data is None:
+			self._alert(
+				"The header of “%s” is not readable, so it was not duplicated. "
+				"Fix it in a text editor." % _name(self._page_path(path))
+			)
+			return
+		self._perform(ops.duplicate(path, self.entries), data)
+
+	@objc.python_method
+	def _reveal(self, path):
+		NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_(
+			[NSURL.fileURLWithPath_(self._page_path(path))]
+		)
+
+	@objc.python_method
+	def _trash(self, path):
+		"""*Move to Trash*, unconfirmed: the Trash is the confirmation (spec §8).
+
+		`trashItemAtURL`, never `os.remove`: nothing ProofBook deletes is
+		beyond the designer's reach.
+		"""
+		filepath = self._page_path(path)
+		result = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
+			NSURL.fileURLWithPath_(filepath), None, None
+		)
+		if not result[0]:
+			error = result[-1]
+			self._alert(
+				"Could not move “%s” to the Trash: %s"
+				% (
+					_name(filepath),
+					error.localizedDescription() if error else "unknown error",
+				)
+			)
+		self._resolve()
+
+	@objc.python_method
+	def _ask_subject(self, title, message, initial, button):
+		"""A subject from the designer, or None: cancelled, or refused with why."""
+		if dialogs is None:
+			return None
+		accessory = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 44))
+		field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 20, 260, 24))
+		field.setStringValue_(initial)
+		label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 16))
+		label.setBezeled_(False)
+		label.setDrawsBackground_(False)
+		label.setEditable_(False)
+		label.setSelectable_(False)
+		label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+		label.setTextColor_(NSColor.secondaryLabelColor())
+		accessory.addSubview_(field)
+		accessory.addSubview_(label)
+		watcher = ProofBookSubjectWatcher.alloc().init()
+		watcher.proofbookField = field
+		watcher.proofbookLabel = label
+		field.setDelegate_(watcher)
+		watcher.proofbookRefresh()
+		answer = dialogs.ask(
+			title,
+			message,
+			buttonTitles=[(button, CONFIRM), ("Cancel", CANCEL)],
+			accessoryView=accessory,
+		)
+		field.setDelegate_(None)
+		if answer != CONFIRM:
+			return None
+		subject, problem = names.typed_subject(field.stringValue())
+		if subject is None:
+			self._alert(problem)
+		return subject
 
 	@objc.python_method
 	def _set_status(self, path, value):
@@ -1988,18 +2153,43 @@ class ProofBookPalette(PalettePlugin):
 		# local page, so a note committed meanwhile is in the bytes it writes.
 		self._retag_inline(path, change, _stat(self._page_path(path)))
 
-	# The collision path below has no caller while tagging writes in place
-	# (ADR-0006). It is kept, tested, for *Rename…* and *Move to* (#23),
-	# which are the verbs that still move a file.
+	# The collision path: rename, move and duplicate — the verbs that can find
+	# their destination taken (spec §8). Tagging writes in place (ADR-0006).
 
 	@objc.python_method
-	def _perform(self, plan):
-		"""Carry out a plan, asking about a collision rather than overwriting."""
+	def _perform(self, plan, data=None):
+		"""Carry out a plan, asking about a collision rather than overwriting.
+
+		The plan's intent is a rename, a copy — whose bytes are `data` — or a
+		new, empty page.
+		"""
 		if plan.collision is not None:
 			plan = self._ask_about(plan.collision)
-		if plan.rename is None:
+		intent = plan.rename
+		if intent is None:
 			return
-		self._rename(plan.rename)
+		if isinstance(intent, intents.Copy):
+			self._create(intent.destination, data)
+		elif isinstance(intent, intents.Create):
+			self._create(intent.destination, b"")
+		else:
+			self._rename(intent)
+
+	@objc.python_method
+	def _create(self, path, data):
+		"""A new file with these bytes, created exclusively: never overwrites.
+
+		The core answered from a listing, and a file can appear between the
+		walk and the click; `x` mode refuses, so "never overwrite" is enforced
+		at the syscall and not only at the plan.
+		"""
+		filepath = self._page_path(path)
+		try:
+			with open(filepath, "xb") as handle:
+				handle.write(data)
+		except OSError as error:
+			self._alert("Could not create “%s”: %s" % (_name(filepath), error))
+		self._resolve()
 
 	@objc.python_method
 	def _ask_about(self, collision):
@@ -2051,6 +2241,9 @@ class ProofBookPalette(PalettePlugin):
 			# rename ProofBook did not perform reads as a delete (spec §6).
 			if self.selectedPath == rename.source:
 				self.selectedPath = rename.destination
+			# The page is the same page: its cached status and what the row
+			# shows go with it, so a renamed placeholder keeps its status.
+			self._carry(rename.source, rename.destination)
 			if self.notePath == rename.source:
 				# And so does the note pane, which is aimed by path: tagging
 				# is a rename (ADR-0001), so a swatch click moves the file
@@ -2062,6 +2255,20 @@ class ProofBookPalette(PalettePlugin):
 		# moved underneath the palette, which is exactly when the tree is
 		# stale. This is the "after its own writes" half of spec §6.
 		self._resolve()
+
+	@objc.python_method
+	def _carry(self, source, destination):
+		"""Move what is known about a page to its new path after a rename.
+
+		A rename leaves mtime and size alone, so the cache entry still
+		validates at the new path; without this, a renamed placeholder would
+		lose its status until someone downloaded it.
+		"""
+		for mapping in (self.known, self.cachePages or {}, self.stamps):
+			if source in mapping:
+				mapping[destination] = mapping.pop(source)
+		if self.cachePages is not None and destination in self.cachePages:
+			self.stamps[destination] = self.cachePages[destination]
 
 	# -- The Edit view ----------------------------------------------------
 

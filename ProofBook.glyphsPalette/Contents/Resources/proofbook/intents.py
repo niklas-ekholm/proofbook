@@ -15,4 +15,11 @@ MakeDir = namedtuple("MakeDir", "path")
 #: a filesystem they are the same call.
 Rename = namedtuple("Rename", "source destination")
 
-__all__ = ["MakeDir", "Rename"]
+#: Write a copy of one page at a new path: *Duplicate*. What the copy holds
+#: is the adapter's to write — the source with every claim reset.
+Copy = namedtuple("Copy", "source destination")
+
+#: Create one new, empty proof-page: *New proof-page*.
+Create = namedtuple("Create", "destination")
+
+__all__ = ["Copy", "Create", "MakeDir", "Rename"]

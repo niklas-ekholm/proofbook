@@ -53,5 +53,23 @@ class Display(unittest.TestCase):
 		self.assertEqual(names.display_subject("caps"), "caps")
 
 
+
+class TypedSubjects(unittest.TestCase):
+	"""A subject a designer typed into *Rename…* or *New proof-page*."""
+
+	def test_it_is_taken_as_typed_trimmed(self):
+		self.assertEqual(names.typed_subject("  small-caps "), ("small-caps", None))
+
+	def test_a_typed_extension_is_not_doubled(self):
+		self.assertEqual(names.typed_subject("caps.txt")[0], "caps")
+		self.assertEqual(names.typed_subject("caps.TXT")[0], "caps")
+
+	def test_what_cannot_be_a_filename_is_refused_with_why(self):
+		for text in ("", "   ", ".hidden", "a/b", "a:b", ".txt"):
+			with self.subTest(text=text):
+				subject, problem = names.typed_subject(text)
+				self.assertIsNone(subject)
+				self.assertTrue(problem)
+
 if __name__ == "__main__":
 	unittest.main()
