@@ -20,6 +20,10 @@ _Avoid_: the plugin, the tool
 A proof-page's design progress, one of `todo`, `wip`, or `done`. A proof-page that has never been touched is `todo`.
 _Avoid_: state, stage, progress, phase
 
+**placeholder**:
+A proof-page whose file the cloud provider has not downloaded. Its status and owner cannot be read without downloading it, so they are **unknown** — which is not the same as `todo`: `todo` is an answer, and this is the absence of one.
+_Avoid_: stub, ghost, missing, unloaded
+
 **note**:
 A single free-text remark attached to a proof-page, written and read in ProofBook's sidebar.
 _Avoid_: annotation, comment, description, label
