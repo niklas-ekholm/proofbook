@@ -1,6 +1,6 @@
 # ProofBook MVP — build specification
 
-**Status**: ready to build. Derived from issues #2–#13 on the wayfinding map ([#1](https://github.com/niklas-ekholm/proofbook/issues/1)) and ADR-0001 through ADR-0005.
+**Status**: ready to build. Derived from issues #2–#13 on the wayfinding map ([#1](https://github.com/niklas-ekholm/proofbook/issues/1)) and ADR-0001 through ADR-0005. Status and ownership re-specified by map [#37](https://github.com/niklas-ekholm/proofbook/issues/37) and ADR-0006, which supersedes ADR-0001 and amends ADR-0003 and ADR-0004.
 
 This document is the hand-off. It says what to build and what has already been decided, so the build session does not re-litigate settled questions. Where a decision has an ADR, the ADR holds the reasoning and this spec holds only the rule; read `CONTEXT.md` first for the glossary — its terms are used here precisely and are not redefined.
 
@@ -29,12 +29,12 @@ A Glyphs 4 palette plugin that browses a `proofbook` folder beside the open Glyp
 
 **ADR-0005 is binding.** ProofBook is split in two:
 
-- **The core** — a package that imports nothing from `GlyphsApp`, `AppKit`, `vanilla` or `objc`, and performs **no syscalls**. It parses and formats filenames, reads and writes the frontmatter header, flattens a listing into display rows, resolves collisions, and decides which paths need background reads.
+- **The core** — a package that imports nothing from `GlyphsApp`, `AppKit`, `vanilla` or `objc`, and performs **no syscalls**. It reads the subject off a filename, reads and writes the frontmatter header, flattens a listing into display rows, resolves collisions, and decides from the status cache which paths need background reads.
 - **The adapter** — the `PalettePlugin` subclass and its vanilla view. It performs every syscall, owns the worker thread, raises dialogs, and draws.
 
-The core takes a directory listing as **input data** (names, `st_flags`) and returns rows plus **intents** — `rename(src, dst)`, `read_background(paths)`, `write_text(path, bytes)`, `trash(path)`, `make_dir(path)`, `copy(src, dst)`. It does not open, stat, or rename anything itself. The adapter performs the intents and feeds the results back.
+The core takes a directory listing as **input data** (names, `st_flags`, `mtime`, `size`) plus the cached entries, and returns rows plus **intents** — `rename(src, dst)`, `read_background(paths)`, `write_text(path, bytes)`, `trash(path)`, `make_dir(path)`, `copy(src, dst)`. It does not open, stat, or rename anything itself. The adapter performs the intents and feeds the results back.
 
-Suggested core modules (a suggestion, not a requirement): `names.py` (the filename grammar), `frontmatter.py` (the header), `tree.py` (listing → rows), `ops.py` (verbs → intents, collision resolution).
+Suggested core modules (a suggestion, not a requirement): `names.py` (filename → subject), `status.py` (the closed set, the swatch cycle, the owner shape), `frontmatter.py` (the header), `cache.py` (the status cache's format and staleness), `tree.py` (listing → rows), `ops.py` (rename, move and duplicate → intents, collision resolution).
 
 ### Layout
 
@@ -60,9 +60,11 @@ No `.xib` and no `.nib`. They are optional in Glyphs 4 and are not used.
 
 Stdlib `unittest`, run as `python3 -m unittest discover tests` with no install step and no Glyphs. **Tests build nothing on the filesystem** — no temp directories, no proof-book fixtures; the core is fed listings as data. The one exception is the bundle's own source, which the layout tests read in place. The suite must cover, at minimum:
 
-- All three legal filename shapes, plus a subject containing hyphens, plus case-insensitive status matching, plus a name that fits no shape.
+- The filename is the subject: a subject containing hyphens, and a legacy `caps-WIP-NE.txt` reading as the subject *caps WIP NE* with no status.
+- The `status` and `owner` keys: lowercase on write, any case on read, `todo` never written, an unrecognised value reading as no status, a repeated known key malformed, and a write dropping any unknown line bearing a known key's name.
 - Frontmatter round-trips: canonical in → canonical out; lenient forms (one-line `note:`, odd indent) normalising on write; unknown keys preserved in order with the note block last; malformed input flagged read-only and never rewritten; line endings preserved; body passed through byte-for-byte.
-- The collision rule producing `caps-2-DONE-NE.txt`, incrementing until free.
+- The collision rule producing `caps-2.txt`, incrementing until free.
+- The status cache: an entry valid while `(mtime, size)` matches; invalid on a mismatch; a placeholder never scheduled for a read; a version mismatch or unparseable cache treated as empty; departed paths pruned.
 - Listing → rows: depth, alphabetical order, empty folders present, non-`.txt` files absent.
 
 ---
@@ -81,31 +83,23 @@ The folder is created **only by an explicit action**: the empty state's *Create 
 
 `.txt` files and all folders are shown. Everything else is **silently ignored** — no warning, no "unrecognised files" section. Empty folders are shown. Subfolders nest arbitrarily and carry no metadata of their own. Everything is ordered alphabetically.
 
-The extension is the membership test; the naming grammar is only a tagging convention. A `.txt` that fits no shape is still a proof-page, shown untagged.
+The extension is the membership test, and the only one: any `.txt` is a proof-page.
 
-### Filename grammar (ADR-0001)
+### Filenames (ADR-0006)
 
-Three legal shapes:
+**The filename is the subject.** Strip `.txt`, and that is the whole rule. Hyphens render as spaces in the palette; the raw filename appears only in the tooltip. The filename carries no status and no owner, and ProofBook never renames a file to tag it.
 
-```
-common-words.txt              untagged: TODO, no owner
-common-words-WIP.txt          tagged, unowned
-common-words-WIP-NE.txt       tagged and owned
-```
-
-- **Parsed right-to-left**: strip `.txt`; if the last segment is a recognised status, the preceding text is the subject; if the last two segments are `<status>-<owner>`, the preceding text is the subject. Otherwise the whole stem is the subject. Subjects may therefore contain hyphens.
-- **An owner is only read from the position after a recognised status.** The closed set anchors the parse, so `caps-ink.txt` is never mistaken for an owner.
-- Status is one of `TODO`, `WIP`, `DONE`. **Matched case-insensitively**, written uppercase. The known cost is accepted deliberately: `things-done.txt` reads as subject `things`, status `DONE` — a visibly wrong status fixed by renaming, never data loss. Do not "fix" this with case-sensitivity without revisiting ADR-0001's trade.
-- Owner is 1–4 letters, no digits, no hyphens, no spaces. Matched case-insensitively, written uppercase.
 - No version numbers. Versions belong to Glyphs files.
-- Status and owner are **independent**: a page may be tagged and unowned. A page may not be owned and untagged.
+- A legacy name such as `caps-WIP-NE.txt` is not parsed: its subject is *caps WIP NE* and it has no status. Nothing is migrated — rename such files by hand.
 
-**One file is one proof-page.** `caps-WIP-NE.txt` and `caps-WIP-MP.txt` are two proof-pages, not two revisions of one. Copy-and-rename to take over someone's page is a human agreement; the plugin does not enforce it.
+**One file is one proof-page.** Two people working on the same subject own two files, `caps.txt` and `caps-2.txt` say. Copy-and-rename to take over someone's page is a human agreement; the plugin does not enforce it.
 
 ### Frontmatter (ADR-0003)
 
 ```
 ---
+status: wip
+owner: NE
 note: |
   Caps look heavy against the lowercase in Bold.
   Revisit after the weight axis is fixed.
@@ -117,16 +111,30 @@ handgloves
 A hand-rolled `Key: value` parser and writer, ~30 lines, shaped as **valid YAML** so editors highlight it. No import that can fail — `PyYAML` is absent from the Plugin Manager index entirely, and `tomllib` is read-only.
 
 - **Fences**: a header exists only if line 1 is exactly `---`, ending at the next `---`. Everything after is proof text, `---` lines included.
+- **Keys** (ADR-0006): `status` is `wip` or `done`, written lowercase and read in any case; `todo` is **never written** — a `todo` page has no `status` key. `owner` is written uppercase, read in any case; the 1–4 letter limit is enforced by the UI, not the reader, so a hand-written `owner: Niklas Ekholm` is shown, truncated in the pill. An unrecognised value (`status: blocked`) reads as no status, not malformed. Status and owner are independent.
+- **One header value, both ways** (#43): reading returns a `Document` carrying a `Header` — `status`, `owner`, `note`, `unknown` — and `write(data, header)` takes one back. A caller reads, `_replace`s the field it changes, and writes: read-modify-write, made explicit. `names` no longer has a `tagged` flag.
 - **Write strictly**: always `note: |` with 2-space-indented continuation lines. One form only. This keeps colons out of scalar position and de-fangs a note line reading `---`.
 - **Read leniently**: any consistent indent (strip the common prefix), or a one-line `note: value` (split on the first colon, value verbatim). Both normalise to canonical form on the next write.
 - Blank lines inside the note belong to it; leading and trailing ones are trimmed.
-- **Unknown keys are preserved verbatim**, written first in original order, note block always last.
-- **Malformed** — no closing fence, or bytes that are not UTF-8 — means the whole file is proof text. The row displays normally (status and owner come from the filename), and the note pane shows the broken header **read-only**. Never overwrite bytes you did not understand; never hide the page.
-- **An emptied note removes the header entirely**, fences included, unless unknown keys remain.
+- **Order on write**: `status`, `owner`, then **unknown keys preserved verbatim** in original order, then the note block always last. A write that sets a known key drops any unknown line bearing that key's name.
+- **Malformed** — no closing fence, bytes that are not UTF-8, or a known key written twice — means the whole file is proof text. The page is **untaggable**: the row shows the malformed swatch (§4), every header write refuses, and the note pane shows the broken header **read-only**. Never overwrite bytes you did not understand; never hide the page. The designer fixes it in a text editor.
+- **A header left with no keys is removed entirely**, fences included — an emptied note on a `todo`, unowned page with no unknown keys.
 - UTF-8 strict; BOM tolerated on read, dropped on write. **Preserve the file's dominant line ending.** The body passes through byte-for-byte — no whitespace tidying, no trailing-newline normalisation. A note edit must diff only the header.
 - No frontmatter at all is valid. A header with no proof text after it is also valid.
 
-Status and owner never appear in frontmatter. **Nothing is stored twice.**
+The filename never carries status or owner. **Nothing is stored twice.**
+
+### The status cache (ADR-0006)
+
+The tree shows status and owner without reading every file, from a per-book cache that the listing's own `lstat` re-validates for free — on a placeholder too, because eviction does not touch `mtime`.
+
+- One JSON file per book at `~/Library/Application Support/ProofBook/<book-folder-name>-<sha1(abspath)[:8]>.json`. A moved font is a different book and starts cold.
+- An entry holds `status`, `owner`, `malformed` (a separate field, never a status value) and the `(mtime, size)` it was validated against. **Never the note.**
+- An entry is valid while `(mtime, size)` matches. A `version` mismatch or a cache that will not parse is discarded, never migrated and never an error.
+- Written once per walk, only when something changed. Entries for paths that left the listing are pruned. Two windows on one book: last writer wins, no locking.
+- `cache.py` in the core decides which entries hold and which paths need reading; the adapter does the I/O.
+
+It is a memo, not a second source of truth: the file always wins.
 
 ---
 
@@ -138,16 +146,27 @@ A **flat `vanilla.List2` with indentation computed in Python.** ProofBook flatte
 
 A proof-page row shows:
 
-- **Status swatch** on the left: `TODO` an empty outline, `WIP` amber, `DONE` green.
+- **Status swatch** on the left, in one of six states — three answers and three absences of one (#41):
+
+  | State | Swatch |
+  |---|---|
+  | `todo` | solid grey outline |
+  | `wip` | amber |
+  | `done` | green |
+  | placeholder, status unknown | dashed grey outline |
+  | still walking — not yet validated or read | faint outline, pulsing (~1.1s) |
+  | malformed | warn-coloured outline, crossed |
+
+  None of the last three may look like `todo`. Row anatomy never changes: size, position and the pill are the same in every state.
 - **Subject** as plain text, hyphens rendered as spaces.
 - **Owner** as an initials pill on the right; absent when the page has no owner.
 - **Tooltip**: the raw filename. This is the *only* place the filename appears in the palette — transparency on demand, not on screen.
 
-An untagged page renders identically to an explicitly-`TODO` one: outline swatch, subject read from the whole stem, no pill.
+A page with no `status` key is `todo`, and renders as one. A page with a `status: todo` written by hand does too.
 
 **Folder rows toggle expansion and never become the selection.** Selection always names a real proof-page.
 
-Above the tree: a thin **coverage bar** (done/wip proportions) with `N of M done` beneath it.
+Above the tree: a thin **coverage bar** — done, then wip, then a **hatched** share for every page whose status is not known (placeholder, still walking, malformed) — with *"N of M done"* beneath it and *"K unknown"* beside that while K > 0. **M is always the whole book**; the denominator never shrinks to what has been read. A wholly unknown book — a cold first open, or a book this machine has never opened — reads as not yet known, not as broken: all pulsing, or all dashed with the download hint (§7).
 
 *(**Verified in Glyphs 4**: the swatches, the pills, the coverage bar and its count all draw, and the tree browses a real proof-book at 18pt rows. Three things were settled by seeing it rather than reasoning about it. The palette keeps **one left margin** — the 13pt the section header sets — which cost the tree its default `NSTableViewStyleInset`, and with it the rounded inset selection highlight; §10 has why no drawing inside a cell could reach that margin instead. A folder's caret is the **system chevron**, the same one the palette header draws, because a hand-drawn arrowhead beneath it reads as a tree drawn by someone else. And rows are **18pt**, not the 24 macOS gives a table: that height is sized for a row with an icon in it, and a proof-book worth browsing is long.)*
 
@@ -170,11 +189,13 @@ Assumed present. The `try: import vanilla` guard lives at **module scope** — n
 
 Neither empty state has a context menu.
 
+**Not yet listed** is a third state, and it is not an empty state: *"Font not saved"* and *"No proof-book yet"* are conclusions about the folder, and this is the absence of one. It exists only on the very first resolve, before the first listing walk has returned (§6); every later walk draws over the previous listing. Once the listing lands, every row appears as *still walking* until its status is validated or read.
+
 ---
 
 ## 5. Selection and the Edit view
 
-Selecting a proof-page strips the frontmatter and pushes the remaining text into the Edit view via `tab.text`.
+Selecting a proof-page strips the frontmatter and pushes the remaining text into the Edit view via `tab.text`. The header it parsed for the note pane also refreshes that page's status, owner and cache entry — the one read ProofBook knows happened.
 
 **The ProofBook tab**: if the current tab is one ProofBook opened **and still holds exactly what ProofBook put there**, its text is replaced; otherwise a new tab is opened (`font.newTab(text)`). ProofBook holds a reference to the tab it opened **and the exact text it pushed there** — both are needed for that test and for the refresh in §6. Use `tab.redraw()`, not `forceRedraw()`.
 
@@ -190,7 +211,7 @@ Keeping the read-back value is what makes the round trip stop mattering: ProofBo
 
 ### Refresh
 
-Re-read the listing when the palette's window **becomes key**, and immediately after any write ProofBook itself performs. Nothing else: no FSEvents watcher, no polling timer, no visible refresh button. The designer leaves Glyphs to pull or edit, and coming back *is* the trigger.
+Re-read the listing when the palette's window **becomes key**, and immediately after any write ProofBook itself performs. **The listing walk runs on the worker** (ADR-0006), statting every entry; while it runs the palette draws the previous listing. The walk then validates the status cache, and every materialised page whose `(mtime, size)` moved is read on the worker. Results redraw on a short **coalesced, cancellable** timer, never per file. Nothing else: no FSEvents watcher, no polling timer, no visible refresh button. The designer leaves Glyphs to pull or edit, and coming back *is* the trigger.
 
 **Never touch the filesystem from `UPDATEINTERFACE`** — it fires on every redraw. Tear down callbacks in `__del__` or Glyphs crashes.
 
@@ -198,35 +219,46 @@ State is per-palette-instance and in-memory: selection, expansion, scroll positi
 
 ### On refresh
 
-- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there** — the same test §5 makes before replacing a tab. If the designer has typed in that tab, the text is theirs; leave it. Nothing has to be *un*remembered for that: the question is asked afresh every time rather than latched, so a tab holding the designer's text fails it here and on the next selection too — and text they restore to exactly what was pushed is ProofBook's again, which latching would have thrown away. **The question is also asked before the page is read**, not after: this runs on every become-key and after every rename, and the read is the main-thread one ADR-0004 is about, so a tab that is not ProofBook's must cost no download to rule out. A refresh writes into that tab wherever it sits in the tab bar, and **never opens one**: unlike a selection, it answers no question the designer just asked, and a proof-page arriving in front of someone who is not in Glyphs is not a refresh. Unchanged is left alone too — a re-push is a redraw, and this runs on every switch back to the window.
+- **The displayed page changed on disk**: re-push the text **only if the ProofBook tab's text is still exactly what ProofBook put there** — the same test §5 makes before replacing a tab. If the designer has typed in that tab, the text is theirs; leave it. Nothing has to be *un*remembered for that: the question is asked afresh every time rather than latched, so a tab holding the designer's text fails it here and on the next selection too — and text they restore to exactly what was pushed is ProofBook's again, which latching would have thrown away. **The question is also asked before the page is read**, not after: this runs on every become-key and after every write, and the read is the main-thread one ADR-0004 is about, so a tab that is not ProofBook's must cost no download to rule out. A refresh writes into that tab wherever it sits in the tab bar, and **never opens one**: unlike a selection, it answers no question the designer just asked, and a proof-page arriving in front of someone who is not in Glyphs is not a refresh. Unchanged is left alone too — a re-push is a redraw, and this runs on every switch back to the window.
 - **The selected page is gone**: clear the selection, empty the note pane, and **leave the Edit view tab exactly as it is.** Deleting a file should not blank a tab that may still be being read. An external rename reads as a delete plus an add; the MVP makes no attempt to track identity across a rename it did not perform.
+- **A row ProofBook just wrote** shows the value written, optimistically, from the click onwards. If the next walk disagrees, the walk wins, silently — the file is the source of truth.
 
 ### Note writes
 
 The note pane has no save button. It commits **on blur, on selection change, and on the window resigning key.** The last is load-bearing: it guarantees a draft reaches disk before the become-key refresh reads the file back, so a refresh can never clobber an uncommitted note. No per-keystroke writes. A commit that finds the file gone drops the draft and says so, rather than recreating the file.
 
+### Header writes
+
+A note commit and a tag both rewrite the whole header, so **every header write happens on the main thread and re-reads the file at the moment of writing** — never from a copy read earlier. A tag on a materialised page reads and writes inline; a tag on a placeholder reads on its own thread (§7) and hands the result back to the main thread, which re-reads and writes. Writes are therefore serialised by the runloop, and neither a tag nor a note can write back a header the other has since changed.
+
 ---
 
 ## 7. Cloud storage (ADR-0004)
 
-> **Postponed indefinitely (2026-09-06).** This section specifies behaviour the
-> MVP does not have: issue #25, which builds the routing and the worker, was
-> closed as not planned. Reads are currently inline and on the main thread, and
-> selecting a placeholder blocks Glyphs until it downloads. The filename-only
-> tree and offline tagging described below are real today; the hint line, the
-> bulk download and the flag-routed selection are not.
+> **Not yet built**: issue #25, reopened by map #37 as a prerequisite, builds the
+> routing, the worker and the status cache. Until it lands, reads are inline
+> and on the main thread.
 
-**The tree reads no file contents at all, and no file read ever happens on the main thread.** This is an invariant, stated because it is free today and expensive to retrofit.
+**No read that could block on a network ever happens on the main thread, and the tree never reads a placeholder.** A cold placeholder read does not fail offline, it **hangs** (#38), so there is no failure to catch: ProofBook decides before reading.
 
-- Placeholders carry the **`SF_DATALESS`** flag (`0x40000000`) in `os.lstat().st_flags`. Statting does not trigger a download (3011 Google Drive files in 0.2s). Plain Python — no PyObjC, no per-provider code.
-- Everything the tree displays comes from filenames, so a fully-dataless proof-book renders instantly.
-- **Bulk download is explicit, never automatic.** A one-line hint above the tree, shown only while true: *"18 of 24 pages not downloaded — Download all"*. It becomes a progress readout — *"downloading 42 of 300…"* — with a **Cancel** that sets a flag the worker checks between files. No modal sheet. The scope of "all" is the whole proof-book recursively, collapsed folders included.
-- **Selection routes by the flag**: a materialised file is read inline; a dataless one goes through the worker, and the Edit view updates when it lands.
-- **Failure on selection**: a `vanilla.dialogs` message naming the file — *"Could not read `caps-WIP-NE.txt`; it may not be downloaded yet"* — and the **ProofBook tab is left untouched**. The row stays selected.
+- Placeholders carry the **`SF_DATALESS`** flag (`0x40000000`) in `os.lstat().st_flags`. Statting does not trigger a download (3011 Google Drive files in 0.2s). Plain Python — no PyObjC, no per-provider code. It is the only flag the listing reads.
+- The tree's statuses come from the status cache (§3), validated by that same `lstat`. A cloud-synced book opened before on this machine shows every status with no downloads; one never opened shows every placeholder's status as unknown.
+- **Bulk download is explicit, never automatic.** A one-line hint above the tree, shown only while true: *"18 of 24 pages not downloaded — Download all"*. It counts **placeholders only** — a malformed or unreadable page is not in it — so it reaches zero when the download finishes, and it is the remedy for unknown statuses too. It becomes a progress readout — *"downloading 42 of 300…"* — with a **Cancel** that sets a flag the worker checks between files. No modal sheet. The scope of "all" is the whole proof-book recursively, collapsed folders included.
+- **Selection routes by the flag**: a materialised file is read inline; a placeholder is read on **its own short-lived thread**, under the same cap and deadline as a tag (below), and the Edit view updates when it lands.
+- **Failure on selection**: a `vanilla.dialogs` message naming the file — *"Could not read `caps.txt`; it may not be downloaded yet"* — and the **ProofBook tab is left untouched**. The row stays selected.
+- **A failed read during a refresh** is silent and uncounted: nobody asked a question, and one unreadable file would otherwise alert on every become-key.
 - **Failure during bulk download** never aborts the run; the worker continues and reports a count: *"downloaded 280 of 300; 20 failed"*.
-- A scan during a download simply runs; rows flipping from dataless to local **is** the progress feedback. The one thing that cancels the worker is the proof-book changing underneath it — a different font focused, or Save As.
+- A scan during a download simply runs; rows flipping from placeholder to local **is** the progress feedback. The one thing that cancels the worker is the proof-book changing underneath it — a different font focused, or Save As.
 
-Renames work on placeholders, so **tagging works fully offline**. A note can only be edited on a selected page, which routing has therefore materialised — there is no read-modify-write against a placeholder anywhere in the design.
+**Tagging a placeholder downloads it** (#42): one page is implicit, many pages is a question.
+
+- A swatch click or a context-menu status/owner verb on a placeholder downloads and tags it. The row updates optimistically, and the read fills the cache.
+- The read runs on **its own short-lived thread**, never the shared worker queue — one offline click would otherwise wedge every read for the session. A second tag on a page already in flight is refused; concurrent tag-reads are **capped** at a small number, and past the cap ProofBook refuses with the reason rather than queueing.
+- **The deadline is on the notification, not the read.** No completion in ~10s and ProofBook says the page could not be downloaded, so it was not tagged. **The attempt is abandoned**: the row reverts at once, and if the read finishes later it only fills the cache — it never writes. The thread may leak; the notice stays true.
+- A placeholder that turns out malformed once downloaded is refused with the reason and the row reverts.
+- **Bulk tagging asks first**, naming how many pages need downloading (§8).
+
+A note can only be edited on a selected page, which routing has therefore materialised, so the note pane never reads a placeholder.
 
 ---
 
@@ -234,11 +266,13 @@ Renames work on placeholders, so **tagging works fully offline**. A note can onl
 
 ### The status swatch
 
-Clicking it cycles `TODO → WIP → DONE`, which renames the file. Tagging is the highest-frequency action and earns a direct target. A misclick is undone by another click or two around the cycle.
+Clicking it cycles `todo → wip → done`, which writes the `status` key (§6, *Header writes*). Tagging is the highest-frequency action and earns a direct target. A misclick is undone by another click or two around the cycle.
 
-**No implicit owner**: clicking the swatch on an untagged page writes `common-words-WIP.txt` and nothing else. One click stays one click, with no dialog ambushing it.
+**No implicit owner**: clicking the swatch on a `todo` page writes `status: wip` and nothing else. One click stays one click, with no dialog ambushing it.
 
-*(**Verified in Glyphs 4**: the swatch cycles and renames on a real proof-book, the tree and the coverage bar redraw without leaving the window, and the owner pill survives a tag. Four things the reasoning could not settle on its own. **The target is the whole marker column**, not the 9pt circle inside it — the circle is a target a trackpad misses, and the rest of the column is empty. **A tag is not a selection**: the click stops at the cell and never reaches the table, so tagging a row leaves the selection and the Edit view exactly as they were; under §6's rule a tab holding the designer's own text would otherwise earn a new tab per tag. **A folder row still toggles** — it has no status to cycle. And the **collision dialog was walked on a case-only collision**, `dup-WIP.txt` cycling onto an existing `Dup-DONE.txt`: on a case-insensitive volume the rename would otherwise have taken that file with it. *Cancel* left both alone; *Save new* produced one renamed file and never touched the one in the way.)*
+On a **malformed** page the swatch refuses, with the reason, once, on the click, in the note pane's voice. On a **placeholder** it downloads and tags (§7). On a row **still walking**, the click waits on nothing: the tag reads the file itself, by the same routing.
+
+*(**Verified in Glyphs 4** under ADR-0001's renaming. The target and tag-is-not-a-selection findings carry over to header writes; the collision half no longer applies to tagging. The swatch cycled and renamed on a real proof-book, the tree and the coverage bar redraw without leaving the window, and the owner pill survives a tag. Four things the reasoning could not settle on its own. **The target is the whole marker column**, not the 9pt circle inside it — the circle is a target a trackpad misses, and the rest of the column is empty. **A tag is not a selection**: the click stops at the cell and never reaches the table, so tagging a row leaves the selection and the Edit view exactly as they were; under §6's rule a tab holding the designer's own text would otherwise earn a new tab per tag. **A folder row still toggles** — it has no status to cycle. And the **collision dialog was walked on a case-only collision**, `dup-WIP.txt` cycling onto an existing `Dup-DONE.txt`: on a case-insensitive volume the rename would otherwise have taken that file with it. *Cancel* left both alone; *Save new* produced one renamed file and never touched the one in the way.)*
 
 ### The context menu
 
@@ -249,7 +283,7 @@ Clicking it cycles `TODO → WIP → DONE`, which renames the file. Tagging is t
 ```
 caps                              <- target header, disabled
 --------------------------------
-Status                        >   TODO / WIP / DONE, current one check-marked
+Status                        >   todo / wip / done, current one check-marked
 Set owner                     >
 Edit note                         (or "Add note" when there is none)
 --------------------------------
@@ -263,14 +297,14 @@ Reveal in Finder
 Move to Trash
 ```
 
-- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `TODO → DONE`, and the menu is where a designer discovers what the swatch does at all.
-- **Rename** opens a `vanilla.dialogs` modal on the **subject only**, prefilled, **showing the resulting filename** so tag preservation is visible rather than implied. No inline cell editing.
+- **Status** duplicates the swatch cycle deliberately: the cycle cannot jump `todo → done`, and the menu is where a designer discovers what the swatch does at all.
+- **Rename** opens a `vanilla.dialogs` modal on the subject, prefilled, **showing the resulting filename**. No inline cell editing.
 - **Move to** is a submenu of the proof-book's folders, indented, plus the root. No `NSOpenPanel` — a destination outside the proof-book is not offerable. The current parent is **greyed, not omitted**. The item is disabled when the list would be empty.
-- **Duplicate** copies the text and **resets every claim**: `TODO`, no owner, **no note**, subject suffixed (`caps-2.txt`). A fixed rule that clears is not a guess; a new file never inherits a progress claim.
+- **Duplicate** copies the text and **resets every claim**: removes the `status`, `owner` and `note` keys, **keeps unknown keys verbatim**, and suffixes the subject (`caps-2.txt`). A fixed rule that clears is not a guess; a new file never inherits a progress claim. On a malformed page it is **disabled** — the claims cannot be reset in a header ProofBook cannot parse.
 
-**Set owner** submenu (ADR-0001 amendment): owners **discovered in the current proof-book's filenames**, alphabetically; the **last owner set**, sorted to the top, stored under a single **global** `Glyphs.defaults` key and shown even when absent from this book; ***New owner…***, free text validated to 1–4 letters, rejected with a message rather than silently mangled; ***Clear owner***, enabled only when the page has one.
+**Set owner** submenu: owners **discovered in the status cache** for the current proof-book, alphabetically — on a partly-known book the list covers only the pages known so far; the **last owner set**, sorted to the top, stored under a single **global** `Glyphs.defaults` key and shown even when absent from this book; ***New owner…***, free text validated to 1–4 letters, rejected with a message rather than silently mangled; ***Clear owner***, enabled only when the page has one.
 
-**The plugin never guesses an owner.** No macOS full name, no git `user.name`. Every owner value was either typed by a human or is already in a filename in this proof-book. No registry, no uniqueness check: two collaborators who are both `NE`, or a designer whose initials change, are the designers' business.
+**The plugin never guesses an owner.** No macOS full name, no git `user.name`. Every owner value was either typed by a human or is already in a header in this proof-book. No registry, no uniqueness check: two collaborators who are both `NE`, or a designer whose initials change, are the designers' business.
 
 **Folder row:**
 
@@ -292,9 +326,9 @@ Move to Trash
 ```
 
 - The bulk verbs are **recursive**. Their submenus are the page-row ones with **no check-marks** — a folder has no current value.
-- **They confirm, with a count**: *"Set 14 proof-pages in `caps` to `DONE`?"*. A bulk re-tag is the only action in ProofBook with **no undo at all** — a rename leaves nothing in the Trash.
-- **Collisions in a bulk re-tag pre-scan, skip, and report**: *"Set 11 proof-pages. 3 skipped — a page with that name already exists."* Never a modal per file; never a numeric suffix, which would invent new subjects during a *tag*.
-- **Duplicating a folder** is a recursive copy applying the same reset throughout: every copied page lands `TODO`, no owner, no note. The copy is named `caps-2`.
+- **They confirm, with a count**: *"Set 14 proof-pages in `caps` to `done`?"*. A bulk re-tag is the only action in ProofBook with **no undo at all** — a header write leaves nothing in the Trash. When the folder holds placeholders, the confirmation also names how many pages must be downloaded first (§7).
+- **Malformed pages in a bulk re-tag are skipped and reported**: The report names how many were skipped and why, and the confirmation counts them too. Never a modal per file, and one broken file never refuses the whole folder.
+- **Duplicating a folder** is a recursive copy applying the same reset throughout: every copied page lands `todo`, no owner, no note, unknown keys kept. A malformed page inside is copied **byte for byte** and counted in a report afterwards, rather than stopping the copy. The copy is named `caps-2`.
 
 **Empty space / no selection:**
 
@@ -309,10 +343,10 @@ No header. **Empty space always targets the root**, regardless of what is expand
 
 ### Cross-cutting rules
 
-- **One collision behaviour everywhere.** Tag-rename, rename, move and duplicate all raise the same modal: ***Save new*** or ***Cancel***. Never overwrite, never merge. *Save new* is a **rename, not a copy** — still one file — with a numeric suffix appended to the **subject**: `caps-WIP-NE.txt` → `caps-2-DONE-NE.txt`, incrementing until free. The suffix sits in the subject so right-to-left parsing is undisturbed and the page sorts adjacent to its sibling. The dialog names both filenames: the one in the way, and the one that will be written. Folder-on-folder collisions yield `caps-2` and the two stay separate. Bulk re-tag is the single exception (skip-and-report, above).
+- **One collision behaviour everywhere.** Rename, move and duplicate all raise the same modal (tagging no longer renames, so it cannot collide): ***Save new*** or ***Cancel***. Never overwrite, never merge. *Save new* is a **rename, not a copy** — still one file — with a numeric suffix appended to the subject: `caps.txt` → `caps-2.txt`, incrementing until free, so the page sorts adjacent to its sibling. The dialog names both filenames: the one in the way, and the one that will be written. Folder-on-folder collisions yield `caps-2` and the two stay separate.
 - **Deletion** uses `NSFileManager.trashItemAtURL_`, never `os.remove`. The item reads *Move to Trash*, not *Delete*. **No confirmation** — the Trash is the confirmation.
 - **Except**: deleting a folder confirms when the folder holds **anything at all on disk**, not just proof-pages. A folder that looks empty in the tree can take a `.glyphs` file to the Trash with it. Phrase the count in proof-pages, plus "and other files" when ignored files are present. An empty folder still deletes unconfirmed.
-- **A malformed header disables exactly one item.** *Status*, *Set owner*, *Rename*, *Move to* and *Duplicate* are filename operations and stay live. Only *Edit note* is **shown disabled**, reading *Note unreadable — fix the header in a text editor*. Hiding it would read as a bug, and this is the only place a designer could learn why their note vanished from the pane.
+- **A malformed header disables every header operation.** *Status*, *Set owner*, *Edit note* and *Duplicate* are **shown disabled**, each saying the header is unreadable and is fixed in a text editor. *Rename*, *Move to*, *Reveal in Finder* and *Move to Trash* are filename operations and stay live. Hiding the disabled items would read as a bug, and they are where a designer learns why the page will not take a tag.
 
 ---
 
@@ -344,4 +378,6 @@ Not blockers; revisit after the MVP has been used:
 - Whether a flat `List2` with Python-computed indentation stays usable at several hundred rows, and whether deep nesting needs more than expand/collapse.
 - Whether the proof-book ever needs a notion of order beyond alphabetical.
 - Whether ProofBook needs any undo beyond the Trash — the recursive bulk re-tag has none, and a confirmation dialog is its only guard.
+- What the *not yet listed* state (§4) shows while the first listing walk runs. It is distinct from both empty states and usually lasts under a second; the prototype for #41 covered rows, not the moment before there are any.
+- Whether iCloud hangs offline as Dropbox does (#38 measured Dropbox only). The design holds either way; see ADR-0006.
 - Distribution through the Plugin Manager (vanilla is declarable as a dependency; the answer does not change between personal use and shipping).
