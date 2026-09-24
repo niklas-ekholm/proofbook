@@ -15,7 +15,9 @@ asked of the rows: coverage is about the whole book, not the visible part.
 
 Status and owner are not in the listing: they live in each page's header
 (ADR-0006). The adapter hands them over as `known`, a map from path to what
-it knows about that page; a page missing from it is drawn `todo` and unowned.
+it knows about that page. A page missing from it is drawn `todo` and unowned
+for now — which the glossary says an unknown status is not; the status cache
+(#47) and the unknown row states (#48) are what tell the two apart.
 """
 
 from collections import namedtuple

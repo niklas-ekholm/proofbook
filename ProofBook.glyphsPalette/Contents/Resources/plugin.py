@@ -555,7 +555,7 @@ class ProofBookRowView(NSView):
 
 	@objc.python_method
 	def _drawSwatch(self, marker, status, emphasized):
-		"""`TODO` an empty outline, `WIP` amber, `DONE` green (spec §4).
+		"""`todo` an empty outline, `wip` amber, `done` green (spec §4).
 
 		Left-aligned in the marker column rather than centred in it: this is
 		the leftmost ink in the tree, and it is what lines up with the
@@ -574,7 +574,7 @@ class ProofBookRowView(NSView):
 			return
 		# A stroke straddles its own path, so the outline is inset by half a
 		# line width — otherwise it draws a hair wider than the filled circle
-		# above it, which is visible the moment a TODO row sits above a DONE.
+		# above it, which is visible the moment a `todo` row sits above a `done` one.
 		outline = NSBezierPath.bezierPathWithOvalInRect_(
 			NSMakeRect(
 				box.origin.x + 0.5,
@@ -1286,12 +1286,18 @@ class ProofBookPalette(PalettePlugin):
 		moment ago is in them and survives (spec §6, *Header writes*). What
 		they become is the core's decision; this reads and writes.
 
-		The read is inline and not yet routed: a placeholder blocks here until
-		it downloads, which is #49's to contain.
+		A placeholder is refused rather than read: reading one blocks Glyphs
+		until it downloads, and forever offline (#38). Downloading it on the
+		click, off the main thread, is #49's.
 		"""
 		filepath = self._page_path(path)
 		name = os.path.basename(filepath)
 		try:
+			if os.lstat(filepath).st_flags & SF_DATALESS:
+				self._alert(
+					"“%s” is not downloaded yet, so it was not tagged." % name
+				)
+				return
 			with open(filepath, "rb") as handle:
 				source = handle.read()
 		except OSError as error:
@@ -1311,6 +1317,10 @@ class ProofBookPalette(PalettePlugin):
 			self._replace(filepath, data, "Could not tag “%s”" % name)
 		# ProofBook's own write, so the tree is refreshed (spec §6).
 		self._resolve()
+
+	# The collision path below has no caller while tagging writes in place
+	# (ADR-0006). It is kept, tested, for *Rename…* and *Move to* (#23),
+	# which are the verbs that still move a file.
 
 	@objc.python_method
 	def _perform(self, plan):

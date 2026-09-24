@@ -626,6 +626,10 @@ class WritingStatusAndOwner(unittest.TestCase):
 		once = self._set(page("---", "Owner: ne", "Status: WIP", "---", "caps"), note="Hi.")
 		self.assertEqual(self._set(once, note="Hi."), once)
 
+	def test_blank_lines_after_a_known_key_survive_a_second_write(self):
+		once = self._set(page("---", "", "", "---", "caps"), status="wip")
+		self.assertEqual(self._set(once, status="wip"), once)
+
 	def test_a_malformed_header_is_never_rewritten(self):
 		source = page("---", "status: wip", "status: done", "---", "caps")
 		self.assertIsNone(self._set(source, status="done"))

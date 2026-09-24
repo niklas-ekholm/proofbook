@@ -1,10 +1,10 @@
 """The `---`-fenced header at the top of a proof-page (ADR-0003, ADR-0006).
 
-A proof-page carries its metadata inside the file: its status, its owner and
-its note (ADR-0006). They sit in a header
-shaped as valid YAML so an editor highlights it and a person reads a format
-they already know — but nothing parses it except ProofBook and a human, which
-is why this module exists and why it imports nothing.
+A proof-page carries its metadata inside the file — its status, its owner and
+its note (ADR-0006) — in a header shaped as valid YAML, so an editor
+highlights it and a person reads a format they already know. Nothing parses it
+except ProofBook and a human, which is why this module exists and why it
+imports nothing but the status vocabulary.
 
 Reading is lenient and never destructive. A header exists only if line 1 is
 exactly `---`, ending at the next `---`; everything after that is proof text,
@@ -37,7 +37,7 @@ the side of the seam a test can reach.
 
 from collections import namedtuple
 
-from . import status as statuses
+from . import status
 
 FENCE = "---"
 
@@ -155,16 +155,14 @@ def write(data, header):
 
 	unknown = list(header.unknown)
 	lines = []
-	stored = statuses.recognised(header.status or "")
-	if stored is not None:
+	recognised = status.recognised(header.status or "")
+	if recognised is not None:
 		unknown = _without(unknown, STATUS_KEY)
-		stored = statuses.stored(stored)
-	if stored is not None:
-		lines.append("%s: %s" % (STATUS_KEY, stored))
-	owner = (header.owner or "").strip()
-	if owner:
+		if status.stored(recognised) is not None:
+			lines.append("%s: %s" % (STATUS_KEY, recognised))
+	if (header.owner or "").strip():
 		unknown = _without(unknown, OWNER_KEY)
-		lines.append("%s: %s" % (OWNER_KEY, statuses.written_owner(owner)))
+		lines.append("%s: %s" % (OWNER_KEY, status.written_owner(header.owner)))
 	lines += unknown + _note_lines(header.note)
 	if not any(line.strip() for line in lines):
 		# A header left with nothing in it goes, fences included: a file
@@ -303,11 +301,12 @@ def _header(lines):
 			found[key] = _value(value, block)
 			continue
 		scalar = value.strip() if not any(line.strip() for line in block) else ""
-		if key == STATUS_KEY and statuses.recognised(scalar) is not None:
-			found[key] = statuses.stored(statuses.recognised(scalar))
-			continue
-		if key == OWNER_KEY and scalar:
-			found[key] = scalar
+		recognised = status.recognised(scalar) if key == STATUS_KEY else None
+		if recognised is not None or (key == OWNER_KEY and scalar):
+			found[key] = status.stored(recognised) if recognised else scalar
+			# Blank lines under a key read into the Header are the header's
+			# spacing, not the key's: kept, or the next write would differ.
+			unknown.extend(block)
 			continue
 		if key in KNOWN_KEYS:
 			# Unrecognised, but still the key: a second one is a repeat.
