@@ -26,6 +26,11 @@ SET_OWNER = "set owner"
 NEW_OWNER = "new owner"
 EDIT_NOTE = "edit note"
 RENAME = "rename"
+NEW_FOLDER = "new folder"
+BULK_STATUS = "bulk status"
+BULK_OWNER = "bulk owner"
+BULK_NEW_OWNER = "bulk new owner"
+REVEAL_BOOK = "reveal book"
 MOVE_TO = "move to"
 DUPLICATE = "duplicate"
 NEW_PAGE = "new page"
@@ -171,3 +176,74 @@ def _owners(row, discovered, last_owner):
 	unknown = row.status in (tree.UNKNOWN, tree.WALKING)
 	items.append(Item("Clear owner", (SET_OWNER, None) if row.owner or unknown else None))
 	return items
+
+
+def folder_menu(row, folders, discovered=(), last_owner=None):
+	"""The menu for a folder row (spec §8, #24).
+
+	It leads with creation, because a folder is mostly a place you put
+	things; then the two recursive bulk verbs, with no check-marks — a folder
+	has no current value, and its pages may be mixed; then its own file
+	verbs. It cannot move into itself or anywhere below itself.
+	"""
+	statuses = tuple(Item(value, (BULK_STATUS, value)) for value in status.STATUSES)
+	owners_ = tuple(
+		_bulk_owner(item) for item in _owners(row, discovered, last_owner)
+	)
+	parent = ops.parent(row.path)
+	destinations = [
+		Item(
+			INDENT * depth + (folder.rpartition(tree.PATH_SEPARATOR)[2] or ROOT_TITLE),
+			None
+			if folder == parent
+			or folder == row.path
+			or folder.startswith(row.path + tree.PATH_SEPARATOR)
+			else (MOVE_TO, folder),
+		)
+		for folder, depth in folders
+	]
+	elsewhere = any(item.action for item in destinations)
+	return [
+		Item(middle_truncated(row.subject)),
+		SEPARATOR,
+		Item("New proof-page", (NEW_PAGE, row.path)),
+		Item("New subfolder", (NEW_FOLDER, row.path)),
+		SEPARATOR,
+		Item("Set status of all pages", items=statuses),
+		Item("Set owner of all pages", items=owners_),
+		SEPARATOR,
+		Item("Rename…", (RENAME,)),
+		Item("Move to", items=tuple(destinations) if elsewhere else ()),
+		Item("Duplicate", (DUPLICATE,)),
+		SEPARATOR,
+		Item("Reveal in Finder", (REVEAL,)),
+		Item("Move to Trash", (TRASH,)),
+	]
+
+
+def _bulk_owner(item):
+	"""A page's owner item, retargeted at every page in a folder."""
+	if item is SEPARATOR:
+		return item
+	if item.action and item.action[0] == SET_OWNER:
+		return item._replace(action=(BULK_OWNER,) + item.action[1:])
+	if item.action and item.action[0] == NEW_OWNER:
+		return item._replace(action=(BULK_NEW_OWNER,))
+	# Clear owner, which a folder always offers: some page in it may be owned.
+	return item._replace(action=(BULK_OWNER, None))
+
+
+def space_menu():
+	"""Empty space: always the root, and no bulk verbs (spec §8).
+
+	Blank space is the easiest menu to open by accident, and a whole-book
+	re-tag is the largest irreversible action in the plugin; it stays
+	reachable a top-level folder at a time. The footer's *+ New proof-page*
+	is exactly this menu's first item.
+	"""
+	return [
+		Item("New proof-page", (NEW_PAGE, "")),
+		Item("New subfolder", (NEW_FOLDER, "")),
+		SEPARATOR,
+		Item("Reveal proof-book in Finder", (REVEAL_BOOK,)),
+	]

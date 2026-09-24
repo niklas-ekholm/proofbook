@@ -66,6 +66,19 @@ def reset(data):
 	return _rewritten(data, lambda header: {"status": None, "owner": None, "note": None})
 
 
+def for_copy(data):
+	"""`(bytes, verbatim)` for a page inside a folder being duplicated.
+
+	Reset like a single page's duplicate — or, where the header cannot be
+	parsed, copied as it was and said so: a folder's copy is not stopped by
+	one broken page (spec §8).
+	"""
+	data_reset = reset(data)
+	if data_reset is None:
+		return data, True
+	return data_reset, False
+
+
 def _rewritten(data, fields):
 	"""The bytes with the header fields `fields(header)` names replaced.
 

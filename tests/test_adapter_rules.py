@@ -397,6 +397,25 @@ class AdapterRules(unittest.TestCase):
 			"self._carry", pysource.called_names(pysource.function(self.adapter, "_rename"))
 		)
 
+	def test_a_bulk_re_tag_always_asks_first(self):
+		# Spec §8: the only action with no undo at all.
+		self.assertIn(
+			"self._confirm", pysource.called_names(pysource.function(self.adapter, "_bulk"))
+		)
+
+	def test_a_folder_holding_anything_asks_before_the_trash(self):
+		trash = pysource.function(self.adapter, "_trash")
+		called = pysource.called_names(trash)
+		self.assertIn("folders.trash_question", called)
+		self.assertIn("self._confirm", called)
+
+	def test_empty_space_and_the_footer_make_the_same_page(self):
+		# The footer's *+ New proof-page* is exactly the empty-space item:
+		# always the root (spec §8).
+		view = pysource.function(self.adapter, "_vanilla_view")
+		self.assertIn("FOOTER_BUTTON", pysource.referenced_names(view))
+		self.assertIn("self._new_page", pysource.called_names(view))
+
 	def test_the_menus_status_verb_is_the_swatchs_operation(self):
 		# #42: same read, same write, same download on a placeholder.
 		self.assertIn(
@@ -735,8 +754,10 @@ class AdapterRules(unittest.TestCase):
 			"_read_page",
 			"_display_page",
 			"_retag",
-			"_retag_inline",
+			"_rewrite",
 			"_write_note",
+			"_copy_folder",
+			"_apply_all",
 		):
 			with self.subTest(method=name):
 				called = pysource.called_names(pysource.function(self.adapter, name))
@@ -983,7 +1004,7 @@ class AdapterRules(unittest.TestCase):
 		self.assertEqual(pysource.attribute_reads(tagging, "status.STATUSES"), [])
 		self.assertEqual(pysource.attribute_reads(tagging, "status.next_stored"), [])
 		self.assertTrue(pysource.attribute_reads(tagging, "tagging.predicted"))
-		inline = pysource.function(self.adapter, "_retag_inline")
+		inline = pysource.function(self.adapter, "_rewrite")
 		self.assertIn(
 			"change",
 			pysource.called_names(inline),
@@ -993,7 +1014,7 @@ class AdapterRules(unittest.TestCase):
 	def test_a_tag_rewrites_the_page_in_place_and_never_renames(self):
 		# ADR-0006: status lives in the header. A tag that still renamed
 		# would cost the page its `git log` history, which is why it moved.
-		tagging = pysource.function(self.adapter, "_retag_inline")
+		tagging = pysource.function(self.adapter, "_rewrite")
 		called = pysource.called_names(tagging)
 		self.assertIn("self._replace", called)
 		for rename in ("self._rename", "self._perform", "os.rename"):
@@ -1001,7 +1022,7 @@ class AdapterRules(unittest.TestCase):
 				self.assertNotIn(rename, called)
 		self.assertIn(
 			"self._resolve",
-			called,
+			pysource.called_names(pysource.function(self.adapter, "_retag_inline")),
 			"spec §6 refreshes after ProofBook's own writes; a tag that "
 			"leaves the old status on screen is one",
 		)

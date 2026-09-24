@@ -29,6 +29,19 @@ class TheSubject(unittest.TestCase):
 		self.assertEqual(names.subject("things-done.txt"), "things-done")
 
 
+
+class TypedFolders(unittest.TestCase):
+	def test_a_folder_name_is_taken_as_typed(self):
+		self.assertEqual(names.typed_folder(" latin "), ("latin", None))
+
+	def test_a_folder_name_cannot_look_like_a_proof_page(self):
+		self.assertIsNone(names.typed_folder("caps.txt")[0])
+
+	def test_the_subject_rules_apply(self):
+		for text in ("", ".hidden", "a/b"):
+			with self.subTest(text=text):
+				self.assertIsNone(names.typed_folder(text)[0])
+
 class Membership(unittest.TestCase):
 	def test_a_txt_file_is_a_proof_page(self):
 		self.assertTrue(names.is_proof_page("caps.txt"))

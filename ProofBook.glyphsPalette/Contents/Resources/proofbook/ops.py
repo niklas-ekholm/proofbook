@@ -8,9 +8,10 @@ writes the file in place and has nothing to collide with.
 
 The rule is: **never overwrite and never proceed silently.** A taken name is
 returned as a `Collision` naming what is in the way, alongside the intent —
-rename, copy or new page — that *Save new* would perform — a numeric suffix on the **subject**, incrementing
-until free, so the page sorts next to its sibling; a folder, which has no
-extension to put it in front of, takes the suffix on the whole name.
+rename, copy or new page — that *Save new* would perform — a numeric suffix on
+the **subject**, incrementing until free, so the page sorts next to its
+sibling; a folder, which has no extension to put it in front of, takes the
+suffix on the whole name.
 
 Nothing here opens or stats anything (ADR-0005). "Is that name taken" is
 answered from the listing the adapter already walked, and it is answered
@@ -54,14 +55,36 @@ def resolved(collision, save_new):
 	return Plan(collision.intent, None) if save_new else NOTHING_TO_DO
 
 
+def suffixed(path, suffix=FIRST_SUFFIX):
+	"""`caps.txt` as `caps-2.txt`, a folder `caps` as `caps-2`, where it is."""
+	folder, name = _split(path)
+	return join(folder, _suffixed(name, suffix))
+
+
+def moved(path, source, destination):
+	"""`path` after `source` moved to `destination`: itself, or inside it."""
+	if path is None:
+		return None
+	if path == source:
+		return destination
+	if path.startswith(source + tree.PATH_SEPARATOR):
+		return destination + path[len(source) :]
+	return path
+
+
+def destination(intent):
+	"""Where an intent puts something: the name a collision dialog offers."""
+	return intent.path if isinstance(intent, intents.MakeDir) else intent.destination
+
+
 def rename(path, subject, entries):
 	"""*Rename…*: the page under a new subject, in the folder it is in."""
-	return move(path, _join(parent(path), names.filename(subject)), entries)
+	return move(path, join(parent(path), names.filename(subject)), entries)
 
 
 def move_into(path, folder, entries):
 	"""*Move to*: the page, under its own name, in another folder ("" the root)."""
-	return move(path, _join(folder, _split(path)[1]), entries)
+	return move(path, join(folder, _split(path)[1]), entries)
 
 
 def duplicate(path, entries):
@@ -75,14 +98,14 @@ def duplicate(path, entries):
 	"""
 	folder, filename = _split(path)
 	subject = "%s%s%d" % (names.subject(filename), names.SEGMENT_SEPARATOR, FIRST_SUFFIX)
-	destination = _join(folder, names.filename(subject))
-	return _planned(intents.Copy, path, destination, entries, keep_source=True)
+	destination = join(folder, names.filename(subject))
+	return planned(intents.Copy, path, destination, entries, keep_source=True)
 
 
 def new_page(folder, subject, entries):
 	"""*New proof-page*: an empty page with this subject, in this folder."""
-	destination = _join(folder, names.filename(subject))
-	return _planned(
+	destination = join(folder, names.filename(subject))
+	return planned(
 		lambda _, free: intents.Create(free), None, destination, entries, keep_source=True
 	)
 
@@ -123,10 +146,10 @@ def move(path, destination, entries):
 	"""
 	if destination == path:
 		return NOTHING_TO_DO
-	return _planned(intents.Rename, path, destination, entries)
+	return planned(intents.Rename, path, destination, entries)
 
 
-def _planned(intent, path, destination, entries, keep_source=False):
+def planned(intent, path, destination, entries, keep_source=False):
 	"""`intent(path, destination)`, or a collision offering the next free name.
 
 	A rename or a move ignores the source — nothing collides with itself,
@@ -145,7 +168,7 @@ def _free(destination, taken):
 	folder, filename = _split(destination)
 	suffix = FIRST_SUFFIX
 	while True:
-		candidate = _join(folder, _suffixed(filename, suffix))
+		candidate = join(folder, _suffixed(filename, suffix))
 		if _key(candidate) not in taken:
 			return candidate
 		suffix += 1
@@ -159,8 +182,8 @@ def _suffixed(filename, suffix):
 	"""
 	if not names.is_proof_page(filename):
 		# A folder, which has no extension to suffix in front of; the two stay
-		# separate rather than merging.
-		return "%s%s%d" % (filename, names.SEGMENT_SEPARATOR, suffix)
+		# separate rather than merging, and a second collision counts on.
+		return "%s%s%d" % (_unsuffixed(filename), names.SEGMENT_SEPARATOR, suffix)
 	subject = "%s%s%d" % (
 		_unsuffixed(names.subject(filename)), names.SEGMENT_SEPARATOR, suffix
 	)
@@ -220,5 +243,5 @@ def _split(path):
 	return (folder if separator else ""), name
 
 
-def _join(folder, name):
+def join(folder, name):
 	return folder + tree.PATH_SEPARATOR + name if folder else name

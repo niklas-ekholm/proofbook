@@ -19,10 +19,13 @@ Rename = namedtuple("Rename", "source destination")
 #: is the adapter's to write — the source with every claim reset.
 Copy = namedtuple("Copy", "source destination")
 
+#: Copy one folder, recursively, to a new path: a folder's *Duplicate*.
+CopyFolder = namedtuple("CopyFolder", "source destination")
+
 #: Create one new, empty proof-page: *New proof-page*.
 Create = namedtuple("Create", "destination")
 
 #: Move one file or folder to the Trash: *Move to Trash*. Never a delete.
 Trash = namedtuple("Trash", "path")
 
-__all__ = ["Copy", "Create", "MakeDir", "Rename", "Trash"]
+__all__ = ["Copy", "CopyFolder", "Create", "MakeDir", "Rename", "Trash"]
