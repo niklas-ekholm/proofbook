@@ -660,6 +660,18 @@ class AdapterRules(unittest.TestCase):
 					pysource.called_names(pysource.function(self.adapter, name)),
 				)
 
+	def test_the_selection_is_routed_by_the_core(self):
+		self.assertIn(
+			"reading.route",
+			pysource.called_names(pysource.function(self.adapter, "_display_page")),
+		)
+
+	def test_a_failed_walk_does_not_stop_the_walks_after_it(self):
+		# A walk that raised must hand its slot back, or every later refresh
+		# waits behind a walk that is not there.
+		later = pysource.function(self.adapter, "_walk_later")
+		self.assertIn("failed", pysource.keyword_argument_names(later))
+
 	def test_a_placeholder_read_gets_a_thread_of_its_own(self):
 		# #42: never the shared worker, which one offline read would wedge
 		# for the session; and capped, and with a deadline on the notice.

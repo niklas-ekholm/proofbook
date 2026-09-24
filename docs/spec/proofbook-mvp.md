@@ -240,9 +240,12 @@ A note commit and a tag both rewrite the whole header, so **every header write h
 
 The download line is two rows above the tree — the count, then a mini
 *Download all* / *Cancel* button beneath it — because the palette is too
-narrow for both on one line. A bulk run that ends with failures says so in an
-alert with the count; a clean run says nothing, because the line disappearing
-is the answer.
+narrow for both on one line. A run that ends reports its count in an alert —
+*"downloaded 280 of 300; 20 failed"*; a cancelled one says nothing, because
+the designer asked for it to stop. **Three pages in a row that never answer
+stop the run** with *"the network is not answering"*: offline every read hangs
+and leaves a thread blocked in it, and the rest of the run would be hours of
+the same.
 
 **No read that could block on a network ever happens on the main thread, and the tree never reads a placeholder.** A cold placeholder read does not fail offline, it **hangs** (#38), so there is no failure to catch: ProofBook decides before reading.
 
