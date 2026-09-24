@@ -1,5 +1,9 @@
 # Proof-page metadata is split between the filename and frontmatter
 
+> **Status: superseded by [ADR-0006](0006-proof-page-metadata-lives-in-the-frontmatter.md)** (2026-09-24).
+> Status, owner and note all live in the frontmatter, and the filename is the
+> subject. Kept as the record of why the split was tried.
+
 A proof-page's status and owner live in its filename (`<subject>-<STATUS>-<OWNER>.txt`, parsed right-to-left so subjects may contain hyphens); its note lives in frontmatter inside the file, stripped before the text reaches the Edit view. Nothing is stored in both places. The rule deciding the split: a fact you need to see *without opening the file* belongs in the name, and a fact you need to *read* belongs in the file.
 
 ## Considered options

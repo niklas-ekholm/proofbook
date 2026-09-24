@@ -17,8 +17,12 @@ The Glyphs 4 palette plugin that browses a proof-book and displays a proof-page 
 _Avoid_: the plugin, the tool
 
 **status**:
-A proof-page's design progress, one of `todo`, `wip`, or `done`. A proof-page that has never been touched is `todo`.
+A proof-page's design progress, one of `todo`, `wip`, or `done`. A proof-page that has never been touched is `todo`. A proof-page whose status has not been read has no known status, which is not `todo`.
 _Avoid_: state, stage, progress, phase
+
+**placeholder**:
+A proof-page whose file the cloud provider has not downloaded. Its status and owner cannot be read without downloading it, so they are **unknown** — which is not the same as `todo`: `todo` is an answer, and this is the absence of one.
+_Avoid_: stub, ghost, missing, unloaded, dataless file
 
 **note**:
 A single free-text remark attached to a proof-page, written and read in ProofBook's sidebar.
@@ -37,5 +41,5 @@ The degree to which a typeface's relevant combinations have been designed and re
 _Avoid_: completeness, testing, QA
 
 **owner**:
-The person responsible for a proof-page, identified by their initials. At most one per proof-page — a page can be tagged with a status and no owner — and a second person working on the same subject owns a separate proof-page.
+The person responsible for a proof-page, identified by their initials. At most one per proof-page — a page can have a status and no owner — and a second person working on the same subject owns a separate proof-page.
 _Avoid_: author, editor, assignee, creator
