@@ -148,6 +148,20 @@ def called_names(node):
 	return names
 
 
+def functions_calling(tree, name):
+	"""The names of the functions under `tree` whose body calls `name`.
+
+	Which functions do a thing, rather than whether anything does: "the note
+	commits at these three moments and nowhere else" is a rule about the set,
+	and a test that only checked the three would not notice a fourth.
+	"""
+	return {
+		node.name
+		for node in ast.walk(tree)
+		if isinstance(node, ast.FunctionDef) and name in called_names(node)
+	}
+
+
 def referenced_names(node):
 	"""Every bare name read under `node` — `DOCUMENTWASSAVED`, not `a.b`."""
 	return {
