@@ -6,7 +6,9 @@ should not be able to lose it by indenting oddly or writing the note on one
 line. Nothing here touches a filesystem — the adapter hands over the bytes it
 read, and a proof-page is a bytestring.
 
-Writing the header back is issue #21; this covers the read only.
+Writing it back landed with issue #21, so the write is covered here too: the
+two are one module because a lenient reader and a strict writer only agree if
+they are read side by side.
 """
 
 import unittest

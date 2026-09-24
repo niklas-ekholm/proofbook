@@ -134,6 +134,11 @@ def write(data, note):
 		# should look like one nobody ever wrote a header into. Blank lines
 		# do not count as something else — they are the header's own spacing,
 		# and fences around nothing but them is a header still there.
+		#
+		# A proof text that itself opens with `---` is left to become a header
+		# on the next read. It is rare, the readme advises against it, and the
+		# alternative is empty fences on a file ProofBook has nothing to say
+		# about — the plainer folder wins.
 		return document.text.encode("utf-8")
 	header = FENCE + ending + "".join(line + ending for line in lines)
 	return (header + FENCE + ending + document.text).encode("utf-8")

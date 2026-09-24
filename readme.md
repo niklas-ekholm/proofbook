@@ -17,6 +17,12 @@ tests/                    unittest suite over the core
 
 The split is ADR-0005. The core is where the logic lives, because it can be tested without launching Glyphs.
 
+## Don't start a proof-page with `---`
+
+A `---` line anywhere in a proof-page is ordinary proof text — except on line 1, where it opens the frontmatter header (ADR-0003). So a page whose *first* line is `---` has a header as far as ProofBook is concerned, and the lines under it are header keys rather than proof text: they will not reach the Edit view, and a note written afterwards is filed below them.
+
+Put a blank line first, or any other separator. This is rare enough not to be worth a special case in the reader — the rule that a header is line 1 or nothing is what keeps `---` usable everywhere else in the file.
+
 ## Install
 
 Symlink the bundle into the Glyphs plugins folder, then restart Glyphs:
