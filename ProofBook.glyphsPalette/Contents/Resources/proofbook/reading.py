@@ -16,7 +16,7 @@ small cap, and a deadline after which the attempt is abandoned. It holds no
 thread and no timer; the adapter owns both and asks it what they mean.
 """
 
-from . import names
+from . import tree
 
 #: Read it here, now: the file is on disk.
 INLINE = "inline"
@@ -49,17 +49,9 @@ def route(entry):
 	return OWN_THREAD if entry.placeholder else INLINE
 
 
-def _pages(entries):
-	return [
-		entry
-		for entry in entries
-		if not entry.is_dir and names.is_proof_page(entry.path.split("/")[-1])
-	]
-
-
 def to_download(entries):
 	"""Every placeholder page, recursively, collapsed folders included."""
-	return [entry.path for entry in _pages(entries) if entry.placeholder]
+	return [entry.path for entry in tree.pages(entries) if entry.placeholder]
 
 
 def hint(entries):
@@ -68,7 +60,7 @@ def hint(entries):
 	It counts **placeholders only** — a page unknown for a reason downloading
 	will not fix is not in it — so it reaches zero when the download ends.
 	"""
-	pages = _pages(entries)
+	pages = tree.pages(entries)
 	missing = sum(1 for entry in pages if entry.placeholder)
 	if not missing:
 		return None

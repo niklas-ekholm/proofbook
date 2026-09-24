@@ -13,7 +13,7 @@ It is a memo, not a second source of truth: the file always wins. It never
 holds the note — the designer's prose stays in the folder they can see.
 
 This module owns the format and the decision; it opens nothing (ADR-0005).
-`hashlib` and `json` are string work.
+`hashlib`, `json` and `os.path.basename` are string work.
 """
 
 import hashlib
@@ -21,7 +21,7 @@ import json
 import os
 from collections import namedtuple
 
-from . import names, tree
+from . import tree
 
 #: A cache file of another version is discarded, never migrated: it is a
 #: cache, and rebuilding it costs one pass over the local files.
@@ -30,10 +30,20 @@ VERSION = 1
 #: One page's entry.
 Cached = namedtuple("Cached", "status owner malformed mtime size")
 
+#: A write ProofBook just made to one page: what it knows the header now
+#: says, and the page's stat on either side of the write.
+Written = namedtuple("Written", "known before_mtime before_size mtime size")
+
 #: `known` is every page whose entry still holds; `to_read` every downloaded
 #: page that has none. A placeholder with no valid entry is in neither: it is
 #: unknown until someone downloads it.
 Plan = namedtuple("Plan", "known to_read")
+
+
+def known(document):
+	"""What the tree knows of a page, from its read header."""
+	header = document.header
+	return tree.Known(header.status, header.owner, document.malformed)
 
 
 def filename(book):
@@ -51,7 +61,7 @@ def plan(pages, entries):
 	"""Which pages are known from the cache, and which must be read."""
 	known = {}
 	to_read = []
-	for entry in _pages(entries):
+	for entry in tree.pages(entries):
 		page = pages.get(entry.path)
 		if page is not None and _fresh(page, entry):
 			known[entry.path] = tree.Known(page.status, page.owner, page.malformed)
@@ -68,7 +78,7 @@ def updated(pages, entries, reads):
 	pruned, and so is one that went stale with nobody re-reading it.
 	"""
 	result = {}
-	for entry in _pages(entries):
+	for entry in tree.pages(entries):
 		if entry.path in reads:
 			known = reads[entry.path]
 			result[entry.path] = Cached(
@@ -89,6 +99,7 @@ def stamped(pages, path, known, mtime, size):
 
 
 def dump(pages):
+	"""The cache as the text of its file. Never the note."""
 	return json.dumps(
 		{
 			"version": VERSION,
@@ -131,6 +142,7 @@ def load(text):
 
 
 def _entry(fields):
+	"""One entry from the file, or None for anything not shaped like one."""
 	if not isinstance(fields, dict):
 		return None
 	status, owner = fields.get("status"), fields.get("owner")
@@ -145,28 +157,20 @@ def _entry(fields):
 
 
 def _fresh(page, entry):
+	"""Does this entry still describe the page the listing statted?"""
 	return page.mtime == entry.mtime and page.size == entry.size
-
-
-def _pages(entries):
-	return [
-		entry
-		for entry in entries
-		if not entry.is_dir and names.is_proof_page(entry.path.split("/")[-1])
-	]
-
-
-#: A write ProofBook just made to one page: what it knows the header now
-#: says, and the stat the write left behind.
-Written = namedtuple("Written", "known mtime size")
 
 
 def overridden(known, entries, written):
 	"""What to draw once a walk lands, given ProofBook's own recent writes.
 
-	The row updated on the click (#40), before any walk. A walk that started
-	before the write saw the old stat, and must not put the old status back;
-	one that saw the write, or anything newer, is the truth and wins silently.
+	The row updated on the click (#40), before any walk. A walk that statted
+	the page exactly as it stood before the write must not put the old status
+	back; one that saw exactly the write takes over; and any other stat is
+	someone else's change, which wins silently — the file is the truth.
+	Compared as whole `(mtime, size)` pairs, not by which mtime is later: a
+	coarse clock or a sync that kept the source's time makes "later" a guess.
+
 	Returns the known map to draw and the writes still waiting to be seen.
 	"""
 	stats = {entry.path: entry for entry in entries}
@@ -174,9 +178,9 @@ def overridden(known, entries, written):
 	waiting = {}
 	for path, write in written.items():
 		entry = stats.get(path)
-		if entry is None or entry.mtime is None:
+		if entry is None:
 			continue
-		if entry.mtime < write.mtime:
+		if (entry.mtime, entry.size) == (write.before_mtime, write.before_size):
 			result[path] = write.known
 			waiting[path] = write
 	return result, waiting

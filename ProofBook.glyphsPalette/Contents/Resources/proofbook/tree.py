@@ -14,10 +14,10 @@ question — how much of this proof-book is done — and it is deliberately not
 asked of the rows: coverage is about the whole book, not the visible part.
 
 Status and owner are not in the listing: they live in each page's header
-(ADR-0006). The adapter hands them over as `known`, a map from path to what
-it knows about that page. A page missing from it is drawn `todo` and unowned
-for now — which the glossary says an unknown status is not; the status cache
-(#47) and the unknown row states (#48) are what tell the two apart.
+(ADR-0006). The adapter hands them over as `known` — what the status cache
+vouches for, and what the walk has read. A page missing from it is drawn
+`todo` and unowned for now, which the glossary says an unknown status is not;
+the unknown row states (#48) are what tell the two apart.
 """
 
 from collections import namedtuple
@@ -53,6 +53,15 @@ Row = namedtuple("Row", "path depth is_dir filename subject status owner expande
 #: `todo` carries every page with no `status` key — they render as `todo` and
 #: count as it, because a page nobody has tagged is a page nobody has started.
 Coverage = namedtuple("Coverage", "done wip todo total done_fraction wip_fraction")
+
+
+def pages(entries):
+	"""The proof-pages in a listing: `.txt` files, anywhere, not folders."""
+	return [
+		entry
+		for entry in entries
+		if not entry.is_dir and names.is_proof_page(entry.path.split(PATH_SEPARATOR)[-1])
+	]
 
 
 def flatten(entries, expanded=(), known=None):

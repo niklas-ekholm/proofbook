@@ -97,31 +97,64 @@ class ProofBooksOwnWrites(unittest.TestCase):
 	"""The row shows what ProofBook wrote until a walk has seen the write."""
 
 	def setUp(self):
-		self.wrote = {"a.txt": cache.Written(tree.Known("done", None, False), 5.0, 12)}
+		# Before the write the page stood at (4.0, 10); after it, (5.0, 12).
+		self.wrote = {
+			"a.txt": cache.Written(tree.Known("done", None, False), 4.0, 10, 5.0, 12)
+		}
 
 	def test_a_walk_from_before_the_write_does_not_undo_it(self):
 		known, written = cache.overridden(
-			{"a.txt": tree.Known("wip", None, False)}, [page("a.txt", mtime=4.0)], self.wrote
+			{"a.txt": tree.Known("wip", None, False)},
+			[page("a.txt", mtime=4.0, size=10)],
+			self.wrote,
 		)
 		self.assertEqual(known["a.txt"].status, "done")
 		self.assertEqual(written, self.wrote)
 
 	def test_a_walk_that_saw_the_write_takes_over(self):
 		walked = {"a.txt": tree.Known("done", None, False)}
-		known, written = cache.overridden(walked, [page("a.txt", mtime=5.0, size=12)], self.wrote)
-		self.assertEqual(known, walked)
-		self.assertEqual(written, {})
+		known, written = cache.overridden(
+			walked, [page("a.txt", mtime=5.0, size=12)], self.wrote
+		)
+		self.assertEqual((known, written), (walked, {}))
 
-	def test_a_newer_change_by_someone_else_wins_silently(self):
-		# The file is the source of truth; the optimistic row was a guess.
-		walked = {"a.txt": tree.Known("wip", "MP", False)}
-		known, written = cache.overridden(walked, [page("a.txt", mtime=9.0)], self.wrote)
-		self.assertEqual(known, walked)
-		self.assertEqual(written, {})
+	def test_any_other_stat_is_someone_elses_change_and_wins(self):
+		# Newer, or older — a sync that kept the source's clock — or the
+		# same second with another size: the file is the truth.
+		for mtime, size in ((9.0, 12), (3.0, 12), (4.0, 11), (5.0, 13)):
+			with self.subTest(mtime=mtime, size=size):
+				walked = {"a.txt": tree.Known("wip", "MP", False)}
+				known, written = cache.overridden(
+					walked, [page("a.txt", mtime=mtime, size=size)], self.wrote
+				)
+				self.assertEqual((known, written), (walked, {}))
+
+	def test_a_same_second_write_is_still_told_apart_by_size(self):
+		# A coarse clock can leave mtime unchanged by the write; the size
+		# still says which side of it a walk stood on.
+		wrote = {"a.txt": cache.Written(tree.Known("done", None, False), 4.0, 10, 4.0, 12)}
+		known, _ = cache.overridden(
+			{"a.txt": tree.Known("wip", None, False)}, [page("a.txt", mtime=4.0, size=10)], wrote
+		)
+		self.assertEqual(known["a.txt"].status, "done")
 
 	def test_a_page_that_left_the_listing_forgets_the_write(self):
 		known, written = cache.overridden({}, [], self.wrote)
 		self.assertEqual((known, written), ({}, {}))
+
+
+class WhatAHeaderSays(unittest.TestCase):
+	def test_a_document_becomes_what_the_tree_knows(self):
+		from proofbook import frontmatter
+
+		document = frontmatter.read(b"---\nstatus: wip\nowner: NE\n---\ncaps\n")
+		self.assertEqual(cache.known(document), tree.Known("wip", "NE", False))
+
+	def test_a_malformed_document_is_known_as_malformed(self):
+		from proofbook import frontmatter
+
+		document = frontmatter.read(b"---\nstatus: wip\n")
+		self.assertTrue(cache.known(document).malformed)
 
 
 class TheFile(unittest.TestCase):

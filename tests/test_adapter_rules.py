@@ -649,6 +649,9 @@ class AdapterRules(unittest.TestCase):
 		self.assertTrue(
 			pysource.attribute_reads(pysource.function(self.adapter, "_stat"), "info.st_flags")
 		)
+		self.assertEqual(
+			pysource.module_constant(self.adapter, "SF_DATALESS"), 0x40000000
+		)
 
 	def test_the_status_cache_is_only_touched_on_the_worker(self):
 		# #39: the cache file is read and written with the walk, off the main
@@ -662,18 +665,16 @@ class AdapterRules(unittest.TestCase):
 					and name in pysource.called_names(node)
 				]
 				self.assertEqual(callers, ["_walk"])
-		self.assertEqual(
-			pysource.module_constant(self.adapter, "SF_DATALESS"), 0x40000000
-		)
 
 	def test_no_inline_read_can_reach_a_placeholder(self):
 		# ADR-0004: a placeholder read blocks until it downloads, and forever
 		# offline (#38). Every main-thread read asks the flag first.
 		for name in ("_read_page", "_display_page", "tagPage", "_write_note"):
 			with self.subTest(method=name):
-				self.assertIn(
-					"_is_placeholder",
-					pysource.called_names(pysource.function(self.adapter, name)),
+				called = pysource.called_names(pysource.function(self.adapter, name))
+				self.assertTrue(
+					{"_is_placeholder", "_stat"} & called,
+					"%s reads without asking the placeholder flag" % name,
 				)
 
 	def test_the_selection_is_routed_by_the_core(self):
