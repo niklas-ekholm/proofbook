@@ -1,22 +1,21 @@
-"""Planning ProofBook's writes, and the one collision rule they obey (spec §8).
+"""Planning ProofBook's renames, and the one collision rule they obey (spec §8).
 
-Status and owner live in the filename (ADR-0001), so **tagging is a rename** —
-which makes the highest-frequency action in ProofBook also one that can find
-its destination taken. Rename, move and duplicate can too, and they must not
-each invent an answer: the rule is settled once here and inherited, which is
-what "one collision behaviour everywhere" means in the spec.
+Rename, move and duplicate can each find their destination taken, and they
+must not each invent an answer: the rule is settled once here and inherited,
+which is what "one collision behaviour everywhere" means in the spec. Tagging
+is not among them — status and owner live in the header (ADR-0006), so a tag
+writes the file in place and has nothing to collide with.
 
 The rule is: **never overwrite and never proceed silently.** A taken name is
 returned as a `Collision` naming what is in the way, alongside the rename that
-*Save new* would perform — a numeric suffix in the **subject**, incrementing
-until free. The suffix sits in the subject so right-to-left parsing is
-undisturbed and the page sorts next to its sibling; a folder, which carries no
-grammar to suffix inside, takes the suffix on the whole name.
+*Save new* would perform — a numeric suffix on the **subject**, incrementing
+until free, so the page sorts next to its sibling; a folder, which has no
+extension to put it in front of, takes the suffix on the whole name.
 
 Nothing here opens or stats anything (ADR-0005). "Is that name taken" is
 answered from the listing the adapter already walked, and it is answered
 **case-insensitively**, because the filesystem underneath is: renaming onto
-`Caps-DONE.txt` when the listing says `caps-DONE.txt` would take a file with
+`Caps.txt` when the listing says `caps.txt` would take a file with
 it. The core returns intents; the adapter performs them.
 """
 
@@ -53,38 +52,11 @@ def resolved(collision, save_new):
 	return Plan(collision.rename, None) if save_new else NOTHING_TO_DO
 
 
-def cycle_status(path, entries):
-	"""Plan what a click on this proof-page's status swatch asks for.
-
-	The swatch is the whole of tagging's fast path (spec §8): read the status
-	out of the filename, write the next one round the cycle. It lives here
-	rather than in the adapter because reading a status from a name is the
-	core's job, and because the click is then answerable by a test that has
-	never seen a swatch.
-	"""
-	_, filename = _split(path)
-	return retag(path, names.next_status(names.parse(filename).status), entries)
-
-
-def retag(path, status, entries):
-	"""Plan the rename that gives this proof-page that status.
-
-	The owner is carried across untouched and **never invented**: tagging an
-	untagged page writes `common-words-WIP.txt` and nothing else, so one click
-	stays one click (spec §8, issue #10). A page that has been tagged stays
-	tagged — the swatch walks the three statuses, it does not untag.
-	"""
-	folder, filename = _split(path)
-	page = names.parse(filename)
-	destination = names.filename(page.subject, status, page.owner)
-	return move(path, _join(folder, destination), entries)
-
-
 def move(path, destination, entries):
 	"""Plan the rename that puts this entry at that path, or report the way blocked.
 
-	The general form: a tag, a rename and a move differ only in which part of
-	the destination changed, and to a filesystem they are one call.
+	The general form: a rename and a move differ only in which part of the
+	destination changed, and to a filesystem they are one call.
 	"""
 	if destination == path:
 		return NOTHING_TO_DO
@@ -110,21 +82,19 @@ def _free(destination, taken):
 
 
 def _suffixed(filename, suffix):
-	"""`caps-DONE-NE.txt` at 2 is `caps-2-DONE-NE.txt`; a folder is `caps-2`.
+	"""`caps.txt` at 2 is `caps-2.txt`; a folder `caps` is `caps-2`.
 
-	The suffix lands in the subject so the status and owner segments stay in
-	the positions `names.parse` reads them from, and so the copy sorts beside
-	the page it collided with rather than at the far end of the alphabet.
+	The suffix lands on the subject so the copy sorts beside the page it
+	collided with rather than at the far end of the alphabet.
 	"""
 	if not names.is_proof_page(filename):
-		# A folder, which has no subject to suffix inside; the two stay
+		# A folder, which has no extension to suffix in front of; the two stay
 		# separate rather than merging.
 		return "%s%s%d" % (filename, names.SEGMENT_SEPARATOR, suffix)
-	page = names.parse(filename)
 	subject = "%s%s%d" % (
-		_unsuffixed(page.subject), names.SEGMENT_SEPARATOR, suffix
+		_unsuffixed(names.subject(filename)), names.SEGMENT_SEPARATOR, suffix
 	)
-	return names.filename(subject, page.status, page.owner, page.tagged)
+	return names.filename(subject)
 
 
 def _unsuffixed(subject):
@@ -149,7 +119,7 @@ def _taken(entries, folder, ignoring=None):
 	"""`{casefolded path: path}` for the entries sitting directly in `folder`.
 
 	Folders count. The filesystem keeps one namespace per directory, so a
-	folder named `caps-DONE.txt` is as much in the way as a page is.
+	folder named `caps.txt` is as much in the way as a page is.
 
 	`ignoring` drops the entry being moved, so nothing ever collides with
 	itself — which is what lets *Rename…* change a name's case alone.

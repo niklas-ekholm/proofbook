@@ -1,25 +1,29 @@
-"""The `---`-fenced header at the top of a proof-page (ADR-0003).
+"""The `---`-fenced header at the top of a proof-page (ADR-0003, ADR-0006).
 
-A proof-page carries one thing inside the file: the note. It sits in a header
-shaped as valid YAML so an editor highlights it and a person reads a format
-they already know — but nothing parses it except ProofBook and a human, which
-is why this module exists and why it imports nothing.
+A proof-page carries its metadata inside the file — its status, its owner and
+its note (ADR-0006) — in a header shaped as valid YAML, so an editor
+highlights it and a person reads a format they already know. Nothing parses it
+except ProofBook and a human, which is why this module exists and why it
+imports nothing but the status vocabulary.
 
 Reading is lenient and never destructive. A header exists only if line 1 is
 exactly `---`, ending at the next `---`; everything after that is proof text,
 `---` lines included. A note may be a `|` block at any consistent indent or a
 one-line `note: value`, and both normalise on the next write. Anything this
 module cannot understand — a header that never closes, bytes that are not
-UTF-8, a header carrying the note key twice — means the whole file is proof
+UTF-8, a header carrying a known key twice — means the whole file is proof
 text and the header is not ProofBook's to rewrite: `malformed` says so, the
-page still displays, and `header` carries the broken text for the note pane to
-show read-only.
+page still displays, and `raw` carries the broken text for the note pane to
+show read-only. Since ADR-0006 that also makes the page untaggable.
 
-Writing is the opposite, and strict: one form only, always `note: |` with
-2-space continuation lines. Keys ProofBook does not recognise come first, in
-the order they were written and line for line as they were written; the note
-block is always last; an emptied note takes the header with it unless those
-keys remain. The proof text is passed through untouched, so a note edit
+Writing is the opposite, and strict: one form only. `status` comes first,
+lowercase, and is never written as `todo`; `owner` next, uppercase; then the
+keys ProofBook does not recognise, in the order they were written and line for
+line as they were written; then the note, always `note: |` with 2-space
+continuation lines. A header left with nothing in it goes, fences included.
+
+`read` hands back one `Header` and `write` takes one: a caller reads,
+`_replace`s the field it changes, and writes (#43). The proof text is passed through untouched, so a note edit
 produces a diff confined to the header rather than a whole-file rewrite. The
 header itself is always written with `\n`, whatever the file uses elsewhere:
 `\n` and `\r\n` both read, one is written, and the writer is idempotent
@@ -33,9 +37,18 @@ the side of the seam a test can reach.
 
 from collections import namedtuple
 
+from . import status
+
 FENCE = "---"
 
 NOTE_KEY = "note"
+STATUS_KEY = "status"
+OWNER_KEY = "owner"
+
+#: The keys this module reads into a `Header`. Any of them written twice is
+#: malformed: writing it back would drop one of the two values or hand the
+#: designer the other one's (ADR-0003).
+KNOWN_KEYS = (STATUS_KEY, OWNER_KEY, NOTE_KEY)
 
 #: The one block indicator ADR-0003 names. A value starting with it means the
 #: note is the indented lines below; anything else is a one-line note. `>` is
@@ -53,27 +66,35 @@ INDENT = "  "
 #: (issue #36).
 ENDING = "\n"
 
-#: `text` is the proof text, header stripped. `note` is None when there is no
-#: note to show — no header, no `note` key, or an empty block. `unknown` is
-#: the header's other lines, verbatim and in order, which the writer puts
-#: back. `header` is the header's own text, which the note pane shows when it
-#: may not be edited. `malformed` means ProofBook did not understand the bytes
-#: and must not write them back.
-Document = namedtuple("Document", "text note unknown header malformed")
+#: What the header says. `status` is the stored form — `wip` or `done`, and
+#: None for `todo` or anything unrecognised. `owner` is as written, any case.
+#: `note` is None when there is no note to show. `unknown` is the header's
+#: other lines, verbatim and in order, which the writer puts back — an
+#: unrecognised `status: blocked` among them.
+Header = namedtuple("Header", "status owner note unknown")
+
+#: A page with no header says nothing: `todo`, unowned, no note.
+EMPTY = Header(None, None, None, ())
+
+#: `text` is the proof text, header stripped. `raw` is the header's own text,
+#: which the note pane shows when it may not be edited. `malformed` means
+#: ProofBook did not understand the bytes and must not write them back; its
+#: `header` is then EMPTY, and nothing in it is to be believed.
+Document = namedtuple("Document", "text header raw malformed")
 
 #: What the note pane holds, and whether the designer may type into it.
 Shown = namedtuple("Shown", "text editable")
 
 
 def read(data):
-	"""Read a proof-page's bytes into its proof text and its note."""
+	"""Read a proof-page's bytes into its proof text and its `Header`."""
 	text, undecodable = _decode(data)
 
 	lines = _lines(text)
 	if not lines or lines[0][0] != FENCE:
 		# No header at all is valid, and is the common case for a proof-book
 		# a designer wrote by hand before ProofBook ever saw it.
-		return Document(text, None, (), "", undecodable)
+		return Document(text, EMPTY, "", undecodable)
 
 	end = _closing_fence(lines)
 	# An opening fence and no closing one: the designer meant a header, but
@@ -82,16 +103,16 @@ def read(data):
 	header = lines[1:] if end is None else lines[1:end]
 	header_text = _join(header)
 	if end is None or undecodable:
-		return Document(text, None, (), header_text, True)
+		return Document(text, EMPTY, header_text, True)
 
-	note, unknown, notes = _entries([content for content, _ in header])
-	if notes > 1:
-		# Two `note` keys, which YAML itself calls undefined. One of them
+	parsed = _header([content for content, _ in header])
+	if parsed is None:
+		# A known key twice, which YAML itself calls undefined. One of them
 		# would have to be dropped or reordered to write the header back, and
 		# reordering is the worse of the two: the reader takes the first, so
-		# writing the survivor last hands the designer the other one's text.
-		return Document(text, None, (), header_text, True)
-	return Document(_join(lines[end + 1:]), note, unknown, header_text, False)
+		# writing the survivor last hands the designer the other one's value.
+		return Document(text, EMPTY, header_text, True)
+	return Document(_join(lines[end + 1:]), parsed, header_text, False)
 
 
 def shown(document):
@@ -109,30 +130,43 @@ def shown(document):
 	document is a rule, and the pane itself is a text view.
 	"""
 	if document.malformed:
-		return Shown(document.header, False)
-	return Shown(document.note or "", True)
+		return Shown(document.raw, False)
+	return Shown(document.header.note or "", True)
 
 
-def write(data, note):
-	"""The proof-page's bytes with its header rewritten to carry `note`.
+def write(data, header):
+	"""The proof-page's bytes with its header rewritten to say `header`.
 
 	None when the bytes were not ProofBook's to rewrite — the same answer
 	`malformed` gives, in the form the caller needs: there is nothing to
 	write. The note pane is read-only in that case, so this is a guard rather
 	than a path anyone takes.
 
+	`header` is normally the one `read` returned, with a field replaced. Its
 	`note` is the note as the designer left it, empty or None for a note they
-	cleared. Everything the file already held that ProofBook does not
-	understand comes back out ahead of it, and the proof text is untouched.
+	cleared. A `status` of `todo`, None or anything unrecognised writes no
+	`status` line. Setting a known key drops any unknown line under that
+	key's name — a kept `status: blocked` beside a new `status: wip` would
+	read back as malformed. The proof text is untouched.
 	"""
 	document = read(data)
 	if document.malformed:
 		return None
 
-	lines = list(document.unknown) + _note_lines(note)
+	unknown = list(header.unknown)
+	lines = []
+	recognised = status.recognised(header.status or "")
+	if recognised is not None:
+		unknown = _without(unknown, STATUS_KEY)
+		if status.stored(recognised) is not None:
+			lines.append("%s: %s" % (STATUS_KEY, recognised))
+	if (header.owner or "").strip():
+		unknown = _without(unknown, OWNER_KEY)
+		lines.append("%s: %s" % (OWNER_KEY, status.written_owner(header.owner)))
+	lines += unknown + _note_lines(header.note)
 	if not any(line.strip() for line in lines):
-		# An emptied note with nothing else in the header takes the header
-		# with it, fences included: a file ProofBook has nothing to say about
+		# A header left with nothing in it goes, fences included: a file
+		# ProofBook has nothing to say about
 		# should look like one nobody ever wrote a header into. Blank lines
 		# do not count as something else — they are the header's own spacing,
 		# and fences around nothing but them is a header still there.
@@ -243,8 +277,8 @@ def _closing_fence(lines):
 	return None
 
 
-def _entries(lines):
-	"""The header split into the note, the rest, and how many notes there were.
+def _header(lines):
+	"""The header's lines read into a `Header`, or None if a key repeats.
 
 	A header is a list of entries, each starting at a line that is not
 	indented and running until the next one. Which entry a line belongs to is
@@ -254,26 +288,64 @@ def _entries(lines):
 
 	The rest is kept as lines rather than parsed into keys and values. The
 	writer puts back exactly what it was handed, so an unknown key whose shape
-	ProofBook does not understand survives a note edit unexamined.
+	ProofBook does not understand survives a write unexamined — and so does a
+	`status` or `owner` whose value is not one, which is the designer's to
+	fix, not ProofBook's to delete.
 	"""
 	unknown = []
-	notes = 0
-	value = None
-	block = []
-	in_note = False
+	found = {}
+	for key, value, block, raw in _entries(lines):
+		if key in found:
+			return None
+		if key == NOTE_KEY:
+			found[key] = _value(value, block)
+			continue
+		scalar = value.strip() if not any(line.strip() for line in block) else ""
+		recognised = status.recognised(scalar) if key == STATUS_KEY else None
+		if recognised is not None or (key == OWNER_KEY and scalar):
+			found[key] = status.stored(recognised) if recognised else scalar
+			# Blank lines under a key read into the Header are the header's
+			# spacing, not the key's: kept, or the next write would differ.
+			unknown.extend(block)
+			continue
+		if key in KNOWN_KEYS:
+			# Unrecognised, but still the key: a second one is a repeat.
+			found[key] = None
+		unknown.extend(raw)
+	return Header(
+		found.get(STATUS_KEY), found.get(OWNER_KEY), found.get(NOTE_KEY), tuple(unknown)
+	)
+
+
+def _entries(lines):
+	"""`(key, value, block, raw)` per entry; `key` casefolded, or None.
+
+	Indented and blank lines belong to the entry above them. Any before the
+	first entry form one keyless entry of their own, kept as they are.
+	"""
+	entries = []
 	for content in lines:
+		if entries and (not content.strip() or content[:1].isspace()):
+			entries[-1][2].append(content)
+			entries[-1][3].append(content)
+			continue
 		if not content.strip() or content[:1].isspace():
-			# Indented, or blank: it belongs to the entry above it.
-			(block if in_note else unknown).append(content)
+			entries.append([None, "", [], [content]])
 			continue
 		key, separator, rest = content.partition(":")
-		in_note = separator != "" and key.strip().casefold() == NOTE_KEY
-		if not in_note:
-			unknown.append(content)
-			continue
-		notes += 1
-		value, block = rest, []
-	return _value(value, block), tuple(unknown), notes
+		key = key.strip().casefold() if separator else None
+		entries.append([key, rest, [], [content]])
+	return entries
+
+
+def _without(lines, key):
+	"""The unknown lines with every entry under this key taken out."""
+	return [
+		line
+		for entry_key, _, _, raw in _entries(lines)
+		if entry_key != key
+		for line in raw
+	]
 
 
 def _value(value, block):

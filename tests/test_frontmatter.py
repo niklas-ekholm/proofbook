@@ -18,6 +18,11 @@ import corepath  # noqa: F401  (puts the bundle's Resources dir on sys.path)
 from proofbook import frontmatter
 
 
+def write_note(data, note):
+	"""The bytes with only the note changed: read, replace, write (#43)."""
+	return frontmatter.write(data, frontmatter.read(data).header._replace(note=note))
+
+
 def page(*lines):
 	"""A proof-page as bytes, one argument per line, newline-terminated."""
 	return ("\n".join(lines) + "\n").encode("utf-8")
@@ -42,31 +47,31 @@ class Fences(unittest.TestCase):
 	def test_a_page_with_no_header_is_all_proof_text(self):
 		document = frontmatter.read(page("HAMBURGEFONSTIV", "handgloves"))
 		self.assertEqual(document.text, "HAMBURGEFONSTIV\nhandgloves\n")
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 		self.assertFalse(document.malformed)
 
 	def test_a_header_with_no_proof_text_after_it_is_valid(self):
 		document = frontmatter.read(page("---", "note: |", "  Hm.", "---"))
 		self.assertEqual(document.text, "")
-		self.assertEqual(document.note, "Hm.")
+		self.assertEqual(document.header.note, "Hm.")
 		self.assertFalse(document.malformed)
 
 	def test_an_empty_page_is_empty_proof_text(self):
 		document = frontmatter.read(b"")
 		self.assertEqual(document.text, "")
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 		self.assertFalse(document.malformed)
 
 	def test_a_header_is_recognised_only_on_line_one(self):
 		# A `---` further down is proof text, not the start of a header.
 		document = frontmatter.read(page("HAMBURGEFONSTIV", "---", "note: |"))
 		self.assertEqual(document.text, "HAMBURGEFONSTIV\n---\nnote: |\n")
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 
 	def test_line_one_must_be_exactly_three_dashes(self):
 		document = frontmatter.read(page("--- ", "note: hi", "---", "caps"))
 		self.assertEqual(document.text, "--- \nnote: hi\n---\ncaps\n")
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 
 	def test_dashes_in_the_proof_text_belong_to_the_proof_text(self):
 		document = frontmatter.read(
@@ -83,7 +88,7 @@ class Malformed(unittest.TestCase):
 		document = frontmatter.read(source)
 		self.assertTrue(document.malformed)
 		self.assertEqual(document.text, source.decode("utf-8"))
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 
 	def test_a_lone_opening_fence_is_not_a_header(self):
 		document = frontmatter.read(page("---"))
@@ -94,17 +99,17 @@ class Malformed(unittest.TestCase):
 		document = frontmatter.read(b"---\nnote: hi\n---\nHAMB\xffRGE\n")
 		self.assertTrue(document.malformed)
 		self.assertIn("HAMB", document.text)
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 
 
 class LenientReading(unittest.TestCase):
 	def test_a_one_line_note_is_read(self):
 		document = frontmatter.read(page("---", "note: Caps look heavy.", "---"))
-		self.assertEqual(document.note, "Caps look heavy.")
+		self.assertEqual(document.header.note, "Caps look heavy.")
 
 	def test_a_one_line_note_keeps_the_colons_inside_it(self):
 		document = frontmatter.read(page("---", "note: see: the Bold", "---"))
-		self.assertEqual(document.note, "see: the Bold")
+		self.assertEqual(document.header.note, "see: the Bold")
 
 	def test_any_consistent_indent_reads_as_the_note(self):
 		for indent in ("  ", "    ", "\t", "        "):
@@ -112,39 +117,39 @@ class LenientReading(unittest.TestCase):
 				document = frontmatter.read(
 					page("---", "note: |", indent + "Caps.", indent + "Bold.", "---")
 				)
-				self.assertEqual(document.note, "Caps.\nBold.")
+				self.assertEqual(document.header.note, "Caps.\nBold.")
 
 	def test_the_common_indent_is_stripped_and_the_rest_kept(self):
 		document = frontmatter.read(
 			page("---", "note: |", "  Caps.", "    Bold.", "---")
 		)
-		self.assertEqual(document.note, "Caps.\n  Bold.")
+		self.assertEqual(document.header.note, "Caps.\n  Bold.")
 
 	def test_a_blank_line_inside_the_note_belongs_to_it(self):
 		document = frontmatter.read(
 			page("---", "note: |", "  Caps.", "", "  Bold.", "---")
 		)
-		self.assertEqual(document.note, "Caps.\n\nBold.")
+		self.assertEqual(document.header.note, "Caps.\n\nBold.")
 
 	def test_leading_and_trailing_blank_lines_are_trimmed(self):
 		document = frontmatter.read(
 			page("---", "note: |", "", "  Caps.", "  ", "---")
 		)
-		self.assertEqual(document.note, "Caps.")
+		self.assertEqual(document.header.note, "Caps.")
 
 	def test_an_empty_note_block_reads_as_no_note(self):
 		document = frontmatter.read(page("---", "note: |", "---", "caps"))
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 		self.assertEqual(document.text, "caps\n")
 
 	def test_a_header_of_other_keys_has_no_note(self):
 		document = frontmatter.read(page("---", "seen: 2026-09-01", "---", "caps"))
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 		self.assertEqual(document.text, "caps\n")
 
 	def test_the_note_key_matches_whatever_case_it_is_written_in(self):
 		document = frontmatter.read(page("---", "Note: Caps.", "---"))
-		self.assertEqual(document.note, "Caps.")
+		self.assertEqual(document.header.note, "Caps.")
 
 	def test_a_note_inside_another_keys_block_belongs_to_that_key(self):
 		# An unknown key's contents are its own: mining them for a `note:`
@@ -152,7 +157,7 @@ class LenientReading(unittest.TestCase):
 		document = frontmatter.read(
 			page("---", "seen: |", "  note: not the note", "---", "caps")
 		)
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 		self.assertEqual(document.text, "caps\n")
 
 	def test_a_folded_block_is_not_read_as_a_literal_one(self):
@@ -160,13 +165,13 @@ class LenientReading(unittest.TestCase):
 		# the designer a note shaped differently from the one they wrote.
 		# ADR-0003 names one form, and this is not it.
 		document = frontmatter.read(page("---", "note: >", "  Caps.", "---"))
-		self.assertNotEqual(document.note, "Caps.")
+		self.assertNotEqual(document.header.note, "Caps.")
 
 	def test_a_note_key_further_down_the_header_is_still_found(self):
 		document = frontmatter.read(
 			page("---", "seen: 2026-09-01", "note: |", "  Caps.", "---")
 		)
-		self.assertEqual(document.note, "Caps.")
+		self.assertEqual(document.header.note, "Caps.")
 
 
 class BytesThroughUntouched(unittest.TestCase):
@@ -174,14 +179,14 @@ class BytesThroughUntouched(unittest.TestCase):
 		source = "﻿---\nnote: Caps.\n---\ncaps\n".encode("utf-8")
 		document = frontmatter.read(source)
 		self.assertFalse(document.malformed)
-		self.assertEqual(document.note, "Caps.")
+		self.assertEqual(document.header.note, "Caps.")
 		self.assertEqual(document.text, "caps\n")
 
 	def test_crlf_line_endings_survive_in_the_proof_text(self):
 		source = b"---\r\nnote: Caps.\r\n---\r\ncaps\r\nhandgloves\r\n"
 		document = frontmatter.read(source)
 		self.assertEqual(document.text, "caps\r\nhandgloves\r\n")
-		self.assertEqual(document.note, "Caps.")
+		self.assertEqual(document.header.note, "Caps.")
 
 	def test_a_proof_text_without_a_trailing_newline_keeps_it_that_way(self):
 		document = frontmatter.read(b"---\nnote: Caps.\n---\ncaps")
@@ -205,33 +210,33 @@ class UnknownKeys(unittest.TestCase):
 	"""
 
 	def test_a_header_of_only_the_note_has_no_unknown_keys(self):
-		self.assertEqual(frontmatter.read(CANONICAL).unknown, ())
+		self.assertEqual(frontmatter.read(CANONICAL).header.unknown, ())
 
 	def test_an_unknown_key_is_kept_verbatim(self):
 		document = frontmatter.read(
 			page("---", "seen: 2026-09-01", "note: |", "  Caps.", "---")
 		)
-		self.assertEqual(document.unknown, ("seen: 2026-09-01",))
-		self.assertEqual(document.note, "Caps.")
+		self.assertEqual(document.header.unknown, ("seen: 2026-09-01",))
+		self.assertEqual(document.header.note, "Caps.")
 
 	def test_unknown_keys_keep_the_order_they_were_written_in(self):
 		document = frontmatter.read(
 			page("---", "seen: 2026-09-01", "note: Caps.", "by: NE", "---")
 		)
-		self.assertEqual(document.unknown, ("seen: 2026-09-01", "by: NE"))
+		self.assertEqual(document.header.unknown, ("seen: 2026-09-01", "by: NE"))
 
 	def test_an_unknown_keys_own_lines_stay_with_it(self):
 		document = frontmatter.read(
 			page("---", "seen: |", "  yesterday", "  and today", "note: Caps.", "---")
 		)
 		self.assertEqual(
-			document.unknown, ("seen: |", "  yesterday", "  and today")
+			document.header.unknown, ("seen: |", "  yesterday", "  and today")
 		)
 
 	def test_a_header_with_no_note_is_all_unknown(self):
 		document = frontmatter.read(page("---", "seen: 2026-09-01", "---", "caps"))
-		self.assertIsNone(document.note)
-		self.assertEqual(document.unknown, ("seen: 2026-09-01",))
+		self.assertIsNone(document.header.note)
+		self.assertEqual(document.header.unknown, ("seen: 2026-09-01",))
 
 
 class TheHeadersOwnText(unittest.TestCase):
@@ -239,23 +244,23 @@ class TheHeadersOwnText(unittest.TestCase):
 
 	def test_a_header_is_kept_as_it_was_written(self):
 		self.assertEqual(
-			frontmatter.read(CANONICAL).header,
+			frontmatter.read(CANONICAL).raw,
 			"note: |\n  Caps look heavy against the lowercase in Bold.\n",
 		)
 
 	def test_a_page_with_no_header_has_no_header_text(self):
-		self.assertEqual(frontmatter.read(page("caps")).header, "")
+		self.assertEqual(frontmatter.read(page("caps")).raw, "")
 
 	def test_an_unclosed_fence_is_a_header_all_the_way_down(self):
 		# Where it ends is exactly what could not be worked out, so all of it
 		# is shown rather than a guess at the part that was meant.
 		document = frontmatter.read(page("---", "note: |", "  Caps.", "caps"))
-		self.assertEqual(document.header, "note: |\n  Caps.\ncaps\n")
+		self.assertEqual(document.raw, "note: |\n  Caps.\ncaps\n")
 
 	def test_bytes_that_are_not_utf_8_still_show_the_header_they_fenced(self):
 		document = frontmatter.read(b"---\nnote: hi\n---\nHAMB\xffRGE\n")
 		self.assertTrue(document.malformed)
-		self.assertEqual(document.header, "note: hi\n")
+		self.assertEqual(document.raw, "note: hi\n")
 
 
 class TwoNotes(unittest.TestCase):
@@ -271,19 +276,19 @@ class TwoNotes(unittest.TestCase):
 		source = page("---", "note: one", "note: two", "---", "caps")
 		document = frontmatter.read(source)
 		self.assertTrue(document.malformed)
-		self.assertIsNone(document.note)
+		self.assertIsNone(document.header.note)
 		self.assertEqual(document.text, source.decode("utf-8"))
 
 	def test_the_two_notes_are_shown_rather_than_hidden(self):
 		document = frontmatter.read(page("---", "note: one", "note: two", "---"))
-		self.assertEqual(document.header, "note: one\nnote: two\n")
+		self.assertEqual(document.raw, "note: one\nnote: two\n")
 
 
 class CanonicalWriting(unittest.TestCase):
 	"""One form only: `note: |` with 2-space continuation lines (ADR-0003)."""
 
 	def test_a_note_added_to_a_page_with_no_header_writes_one(self):
-		written = frontmatter.write(
+		written = write_note(
 			page("HAMBURGEFONSTIV", "handgloves"),
 			"Caps look heavy against the lowercase in Bold.",
 		)
@@ -291,15 +296,15 @@ class CanonicalWriting(unittest.TestCase):
 
 	def test_a_note_written_into_an_empty_page_is_all_there_is(self):
 		self.assertEqual(
-			frontmatter.write(b"", "Hm."), page("---", "note: |", "  Hm.", "---")
+			write_note(b"", "Hm."), page("---", "note: |", "  Hm.", "---")
 		)
 
 	def test_a_canonical_page_rewritten_with_its_own_note_is_unchanged(self):
 		document = frontmatter.read(CANONICAL)
-		self.assertEqual(frontmatter.write(CANONICAL, document.note), CANONICAL)
+		self.assertEqual(write_note(CANONICAL, document.header.note), CANONICAL)
 
 	def test_a_multi_line_note_indents_every_line(self):
-		written = frontmatter.write(page("caps"), "Caps.\nBold.")
+		written = write_note(page("caps"), "Caps.\nBold.")
 		self.assertEqual(
 			written, page("---", "note: |", "  Caps.", "  Bold.", "---", "caps")
 		)
@@ -307,24 +312,24 @@ class CanonicalWriting(unittest.TestCase):
 	def test_a_blank_line_inside_the_note_is_written_blank(self):
 		# Two spaces on an otherwise empty line is trailing whitespace, which
 		# an editor that strips it would silently rewrite the header.
-		written = frontmatter.write(page("caps"), "Caps.\n\nBold.")
+		written = write_note(page("caps"), "Caps.\n\nBold.")
 		self.assertEqual(
 			written, page("---", "note: |", "  Caps.", "", "  Bold.", "---", "caps")
 		)
 
 	def test_a_note_line_reading_three_dashes_is_de_fanged(self):
-		written = frontmatter.write(page("caps"), "Before\n---\nAfter")
+		written = write_note(page("caps"), "Before\n---\nAfter")
 		document = frontmatter.read(written)
-		self.assertEqual(document.note, "Before\n---\nAfter")
+		self.assertEqual(document.header.note, "Before\n---\nAfter")
 		self.assertEqual(document.text, "caps\n")
 
 	def test_a_colon_in_a_note_stays_out_of_scalar_position(self):
-		written = frontmatter.write(page("caps"), "see: the Bold")
-		self.assertEqual(frontmatter.read(written).note, "see: the Bold")
+		written = write_note(page("caps"), "see: the Bold")
+		self.assertEqual(frontmatter.read(written).header.note, "see: the Bold")
 
 	def test_writing_the_same_note_twice_changes_nothing_the_second_time(self):
-		once = frontmatter.write(page("caps"), "Caps.\n\n  Bold.")
-		twice = frontmatter.write(once, frontmatter.read(once).note)
+		once = write_note(page("caps"), "Caps.\n\n  Bold.")
+		twice = write_note(once, frontmatter.read(once).header.note)
 		self.assertEqual(once, twice)
 
 
@@ -332,18 +337,18 @@ class Normalising(unittest.TestCase):
 	"""Lenient in, canonical out — on the next write, not on read."""
 
 	def test_a_one_line_note_normalises_to_a_block(self):
-		written = frontmatter.write(
+		written = write_note(
 			page("---", "note: Caps.", "---", "caps"), "Caps."
 		)
 		self.assertEqual(written, page("---", "note: |", "  Caps.", "---", "caps"))
 
 	def test_an_odd_indent_normalises_to_two_spaces(self):
 		source = page("---", "note: |", "\t\tCaps.", "---", "caps")
-		written = frontmatter.write(source, frontmatter.read(source).note)
+		written = write_note(source, frontmatter.read(source).header.note)
 		self.assertEqual(written, page("---", "note: |", "  Caps.", "---", "caps"))
 
 	def test_the_note_key_is_written_lowercase_whatever_it_was(self):
-		written = frontmatter.write(page("---", "Note: Caps.", "---"), "Caps.")
+		written = write_note(page("---", "Note: Caps.", "---"), "Caps.")
 		self.assertEqual(written, page("---", "note: |", "  Caps.", "---"))
 
 	def test_a_note_reads_back_exactly_as_it_was_written(self):
@@ -358,16 +363,16 @@ class Normalising(unittest.TestCase):
 			("Caps.\n  Bold.", "Caps.\n  Bold."),
 		]:
 			with self.subTest(note=note):
-				written = frontmatter.write(page("caps"), note)
-				self.assertEqual(frontmatter.read(written).note, expected)
+				written = write_note(page("caps"), note)
+				self.assertEqual(frontmatter.read(written).header.note, expected)
 				self.assertEqual(
-					frontmatter.write(written, expected),
+					write_note(written, expected),
 					written,
 					"a second save of the note it just read moves the file",
 				)
 
 	def test_blank_lines_around_the_note_are_trimmed(self):
-		written = frontmatter.write(page("caps"), "\n\nCaps.\n  \n")
+		written = write_note(page("caps"), "\n\nCaps.\n  \n")
 		self.assertEqual(written, page("---", "note: |", "  Caps.", "---", "caps"))
 
 
@@ -377,7 +382,7 @@ class UnknownKeysSurvive(unittest.TestCase):
 			"---", "seen: 2026-09-01", "note: |", "  Old.", "by: NE", "---", "caps"
 		)
 		self.assertEqual(
-			frontmatter.write(source, "New."),
+			write_note(source, "New."),
 			page(
 				"---",
 				"seen: 2026-09-01",
@@ -392,7 +397,7 @@ class UnknownKeysSurvive(unittest.TestCase):
 	def test_an_unknown_keys_own_lines_are_written_verbatim(self):
 		source = page("---", "seen: |", "  yesterday", "---", "caps")
 		self.assertEqual(
-			frontmatter.write(source, "Caps."),
+			write_note(source, "Caps."),
 			page(
 				"---", "seen: |", "  yesterday", "note: |", "  Caps.", "---", "caps"
 			),
@@ -404,24 +409,24 @@ class EmptyingANote(unittest.TestCase):
 
 	def test_emptying_the_note_removes_the_header_entirely(self):
 		self.assertEqual(
-			frontmatter.write(CANONICAL, ""), page("HAMBURGEFONSTIV", "handgloves")
+			write_note(CANONICAL, ""), page("HAMBURGEFONSTIV", "handgloves")
 		)
 
 	def test_a_note_of_nothing_but_whitespace_is_an_emptied_note(self):
 		self.assertEqual(
-			frontmatter.write(CANONICAL, "  \n\n"),
+			write_note(CANONICAL, "  \n\n"),
 			page("HAMBURGEFONSTIV", "handgloves"),
 		)
 
 	def test_no_note_at_all_empties_it_too(self):
 		self.assertEqual(
-			frontmatter.write(CANONICAL, None), page("HAMBURGEFONSTIV", "handgloves")
+			write_note(CANONICAL, None), page("HAMBURGEFONSTIV", "handgloves")
 		)
 
 	def test_the_header_stays_when_unknown_keys_remain(self):
 		source = page("---", "seen: 2026-09-01", "note: Caps.", "---", "caps")
 		self.assertEqual(
-			frontmatter.write(source, ""),
+			write_note(source, ""),
 			page("---", "seen: 2026-09-01", "---", "caps"),
 		)
 
@@ -429,11 +434,11 @@ class EmptyingANote(unittest.TestCase):
 		# A blank line is the header's own spacing, not a key somebody else
 		# wrote: fences around nothing but whitespace is a header still there.
 		source = page("---", "", "note: |", "  Caps.", "", "---", "caps")
-		self.assertEqual(frontmatter.write(source, ""), page("caps"))
+		self.assertEqual(write_note(source, ""), page("caps"))
 
 	def test_emptying_a_note_that_was_never_there_changes_nothing(self):
 		source = page("HAMBURGEFONSTIV", "handgloves")
-		self.assertEqual(frontmatter.write(source, ""), source)
+		self.assertEqual(write_note(source, ""), source)
 
 
 class BytesTheWriterMustNotTouch(unittest.TestCase):
@@ -441,17 +446,17 @@ class BytesTheWriterMustNotTouch(unittest.TestCase):
 
 	def test_the_body_is_passed_through_byte_for_byte(self):
 		body = "  caps  \n\n\nhandgloves\t\n\n"
-		written = frontmatter.write(
+		written = write_note(
 			("---\nnote: hi\n---\n" + body).encode("utf-8"), "New."
 		)
 		self.assertTrue(written.endswith(body.encode("utf-8")))
 
 	def test_a_body_without_a_trailing_newline_keeps_it_that_way(self):
-		written = frontmatter.write(b"---\nnote: hi\n---\ncaps", "New.")
+		written = write_note(b"---\nnote: hi\n---\ncaps", "New.")
 		self.assertTrue(written.endswith(b"caps"))
 
 	def test_the_header_is_always_written_with_lf(self):
-		written = frontmatter.write(
+		written = write_note(
 			b"---\r\nnote: old\r\n---\r\ncaps\r\n", "New."
 		)
 		self.assertEqual(written, b"---\nnote: |\n  New.\n---\ncaps\r\n")
@@ -464,18 +469,18 @@ class BytesTheWriterMustNotTouch(unittest.TestCase):
 			b"---\r\nnote: |\r\n  A.\r\n  B.\r\n  C.\r\n---\r\n"
 			b"a\nb\nc\nd\ne\n"
 		)
-		once = frontmatter.write(mixed, "D.")
-		self.assertEqual(frontmatter.write(once, "D."), once)
+		once = write_note(mixed, "D.")
+		self.assertEqual(write_note(once, "D."), once)
 
 	def test_a_bom_is_dropped_on_write(self):
-		written = frontmatter.write(
+		written = write_note(
 			"\ufeff---\nnote: old\n---\ncaps\n".encode("utf-8"), "New."
 		)
 		self.assertEqual(written, page("---", "note: |", "  New.", "---", "caps"))
 
 	def test_only_the_header_differs_after_a_note_edit(self):
 		source = page("---", "note: |", "  Old.", "---", "caps", "handgloves")
-		written = frontmatter.write(source, "New.")
+		written = write_note(source, "New.")
 		self.assertEqual(
 			frontmatter.read(written).text, frontmatter.read(source).text
 		)
@@ -486,17 +491,17 @@ class WhatIsNotOursToWrite(unittest.TestCase):
 
 	def test_an_unclosed_fence_is_never_rewritten(self):
 		self.assertIsNone(
-			frontmatter.write(page("---", "note: |", "  Caps.", "caps"), "New.")
+			write_note(page("---", "note: |", "  Caps.", "caps"), "New.")
 		)
 
 	def test_bytes_that_are_not_utf_8_are_never_rewritten(self):
 		self.assertIsNone(
-			frontmatter.write(b"---\nnote: hi\n---\nHAMB\xffRGE\n", "New.")
+			write_note(b"---\nnote: hi\n---\nHAMB\xffRGE\n", "New.")
 		)
 
 	def test_a_header_with_two_notes_is_never_rewritten(self):
 		self.assertIsNone(
-			frontmatter.write(page("---", "note: one", "note: two", "---"), "New.")
+			write_note(page("---", "note: one", "note: two", "---"), "New.")
 		)
 
 
@@ -520,9 +525,114 @@ class WhatThePaneShows(unittest.TestCase):
 		# pane is the broken header sitting in it (spec §9).
 		document = frontmatter.read(page("---", "note: |", "  Caps.", "caps"))
 		shown = frontmatter.shown(document)
-		self.assertEqual(shown.text, document.header)
+		self.assertEqual(shown.text, document.raw)
 		self.assertFalse(shown.editable)
 
+
+
+class StatusAndOwner(unittest.TestCase):
+	"""The two keys ADR-0006 moved out of the filename (#43)."""
+
+	def test_status_and_owner_are_read(self):
+		header = frontmatter.read(page("---", "status: wip", "owner: NE", "---")).header
+		self.assertEqual((header.status, header.owner), ("wip", "NE"))
+
+	def test_they_are_read_in_any_case(self):
+		header = frontmatter.read(page("---", "Status: DONE", "OWNER: ne", "---")).header
+		self.assertEqual((header.status, header.owner), ("done", "ne"))
+
+	def test_no_header_is_no_status_and_no_owner(self):
+		header = frontmatter.read(page("caps")).header
+		self.assertEqual((header.status, header.owner, header.note), (None, None, None))
+		self.assertEqual(header.unknown, ())
+
+	def test_an_unrecognised_status_reads_as_none_and_is_kept(self):
+		document = frontmatter.read(page("---", "status: blocked", "---", "caps"))
+		self.assertFalse(document.malformed)
+		self.assertIsNone(document.header.status)
+		self.assertEqual(document.header.unknown, ("status: blocked",))
+
+	def test_an_explicit_todo_reads_as_no_status(self):
+		header = frontmatter.read(page("---", "status: todo", "---")).header
+		self.assertIsNone(header.status)
+
+	def test_a_long_owner_is_read_as_written(self):
+		header = frontmatter.read(page("---", "owner: Niklas Ekholm", "---")).header
+		self.assertEqual(header.owner, "Niklas Ekholm")
+
+	def test_a_repeated_status_is_malformed(self):
+		document = frontmatter.read(page("---", "status: wip", "status: done", "---"))
+		self.assertTrue(document.malformed)
+
+	def test_a_repeated_owner_is_malformed(self):
+		document = frontmatter.read(page("---", "owner: NE", "owner: MP", "---"))
+		self.assertTrue(document.malformed)
+
+
+class WritingStatusAndOwner(unittest.TestCase):
+	def _set(self, data, **fields):
+		return frontmatter.write(data, frontmatter.read(data).header._replace(**fields))
+
+	def test_status_is_written_lowercase(self):
+		self.assertEqual(
+			self._set(page("caps"), status="WIP"),
+			page("---", "status: wip", "---", "caps"),
+		)
+
+	def test_todo_is_never_written(self):
+		source = page("---", "status: wip", "---", "caps")
+		self.assertEqual(self._set(source, status="todo"), page("caps"))
+		self.assertEqual(self._set(source, status=None), page("caps"))
+
+	def test_owner_is_written_uppercase(self):
+		self.assertEqual(
+			self._set(page("caps"), owner="ne"),
+			page("---", "owner: NE", "---", "caps"),
+		)
+
+	def test_known_keys_come_first_then_unknown_then_the_note(self):
+		source = page("---", "note: Hi.", "seen: today", "owner: NE", "---", "caps")
+		self.assertEqual(
+			self._set(source, status="done"),
+			page(
+				"---", "status: done", "owner: NE", "seen: today",
+				"note: |", "  Hi.", "---", "caps",
+			),
+		)
+
+	def test_setting_status_drops_an_unrecognised_status_line(self):
+		# Otherwise `status: blocked` survives beside the new one and the
+		# file reads as malformed after ProofBook's own write (#43).
+		source = page("---", "status: blocked", "---", "caps")
+		self.assertEqual(
+			self._set(source, status="wip"),
+			page("---", "status: wip", "---", "caps"),
+		)
+
+	def test_an_unrecognised_status_survives_a_note_edit(self):
+		source = page("---", "status: blocked", "---", "caps")
+		self.assertEqual(
+			write_note(source, "Hi."),
+			page("---", "status: blocked", "note: |", "  Hi.", "---", "caps"),
+		)
+
+	def test_clearing_every_key_removes_the_header(self):
+		source = page("---", "status: wip", "owner: NE", "note: Hi.", "---", "caps")
+		self.assertEqual(
+			self._set(source, status=None, owner=None, note=None), page("caps")
+		)
+
+	def test_writing_twice_gives_the_same_bytes(self):
+		once = self._set(page("---", "Owner: ne", "Status: WIP", "---", "caps"), note="Hi.")
+		self.assertEqual(self._set(once, note="Hi."), once)
+
+	def test_blank_lines_after_a_known_key_survive_a_second_write(self):
+		once = self._set(page("---", "", "", "---", "caps"), status="wip")
+		self.assertEqual(self._set(once, status="wip"), once)
+
+	def test_a_malformed_header_is_never_rewritten(self):
+		source = page("---", "status: wip", "status: done", "---", "caps")
+		self.assertIsNone(self._set(source, status="done"))
 
 if __name__ == "__main__":
 	unittest.main()

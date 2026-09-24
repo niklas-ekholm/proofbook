@@ -10,7 +10,7 @@ import unittest
 
 import corepath  # noqa: F401  (puts the bundle's Resources dir on sys.path)
 
-from proofbook import names, tree
+from proofbook import status, tree
 
 
 def listing(*paths):
@@ -18,6 +18,10 @@ def listing(*paths):
 	return [
 		tree.Entry(path.rstrip("/"), path.endswith("/")) for path in paths
 	]
+
+
+def known(stored_status=None, owner=None, malformed=False):
+	return tree.Known(stored_status, owner, malformed)
 
 
 def paths(rows):
@@ -62,13 +66,12 @@ class Order(unittest.TestCase):
 		self.assertEqual(paths(rows), ["alpha.txt", "beta", "gamma.txt"])
 
 	def test_a_status_change_does_not_reorder_the_listing(self):
-		# The subject sorts first, which is half of why status lives in the
-		# filename at all (ADR-0001).
-		before = tree.flatten(listing("beta.txt", "caps-WIP.txt"))
-		after = tree.flatten(listing("beta.txt", "caps-DONE-NE.txt"))
-		self.assertEqual(
-			[row.subject for row in before], [row.subject for row in after]
-		)
+		# Status lives in the header (ADR-0006), so the filename, and the
+		# order, cannot change when a page is tagged.
+		entries = listing("beta.txt", "caps.txt")
+		before = tree.flatten(entries, known={"caps.txt": known(status.WIP)})
+		after = tree.flatten(entries, known={"caps.txt": known(status.DONE, "NE")})
+		self.assertEqual(paths(before), paths(after))
 
 	def test_children_are_sorted_within_their_folder(self):
 		rows = tree.flatten(
@@ -127,24 +130,31 @@ class Depth(unittest.TestCase):
 
 class RowContent(unittest.TestCase):
 	def test_a_page_row_carries_its_subject_status_and_owner(self):
-		(row,) = tree.flatten(listing("common-words-WIP-NE.txt"))
+		(row,) = tree.flatten(
+			listing("common-words.txt"),
+			known={"common-words.txt": known("wip", "NE")},
+		)
 		self.assertEqual(row.subject, "common words")
-		self.assertEqual(row.status, names.WIP)
+		self.assertEqual(row.status, status.WIP)
 		self.assertEqual(row.owner, "NE")
 		self.assertFalse(row.is_dir)
 
-	def test_an_untagged_page_renders_like_an_explicit_todo(self):
-		(untagged,) = tree.flatten(listing("caps.txt"))
-		(explicit,) = tree.flatten(listing("caps-TODO.txt"))
-		self.assertEqual(untagged.status, explicit.status)
-		self.assertEqual(untagged.subject, explicit.subject)
-		self.assertEqual(untagged.owner, explicit.owner)
+	def test_a_page_with_no_status_key_is_todo(self):
+		(row,) = tree.flatten(listing("caps.txt"), known={"caps.txt": known()})
+		self.assertEqual(row.status, status.TODO)
+		self.assertIsNone(row.owner)
+
+	def test_a_legacy_name_is_all_subject(self):
+		(row,) = tree.flatten(listing("caps-WIP-NE.txt"))
+		self.assertEqual(row.subject, "caps WIP NE")
+		self.assertEqual(row.status, status.TODO)
+		self.assertIsNone(row.owner)
 
 	def test_the_raw_filename_rides_along_for_the_tooltip(self):
 		# The only place the filename appears in the palette: transparency on
 		# demand, not on screen.
-		(row,) = tree.flatten(listing("common-words-WIP-NE.txt"))
-		self.assertEqual(row.filename, "common-words-WIP-NE.txt")
+		(row,) = tree.flatten(listing("common-words.txt"))
+		self.assertEqual(row.filename, "common-words.txt")
 
 	def test_a_folder_row_has_no_status_and_no_owner(self):
 		(row,) = tree.flatten(listing("caps/"))
