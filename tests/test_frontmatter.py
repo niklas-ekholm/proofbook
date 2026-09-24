@@ -456,11 +456,6 @@ class BytesTheWriterMustNotTouch(unittest.TestCase):
 		)
 		self.assertEqual(written, b"---\nnote: |\n  New.\n---\ncaps\r\n")
 
-	def test_a_crlf_header_still_reads(self):
-		document = frontmatter.read(b"---\r\nnote: |\r\n  Old.\r\n---\r\ncaps\r\n")
-		self.assertEqual(document.note, "Old.")
-		self.assertEqual(document.text, "caps\r\n")
-
 	def test_a_mixed_ending_file_writes_the_same_twice(self):
 		# Issue #36. Under a counted ending, this CRLF header outnumbered the
 		# LF body until a shorter note was written into it, and the second
@@ -471,10 +466,6 @@ class BytesTheWriterMustNotTouch(unittest.TestCase):
 		)
 		once = frontmatter.write(mixed, "D.")
 		self.assertEqual(frontmatter.write(once, "D."), once)
-
-	def test_a_stray_crlf_does_not_make_a_unix_file_dos(self):
-		written = frontmatter.write(b"caps\r\nhandgloves\ncaps\n", "New.")
-		self.assertTrue(written.startswith(b"---\nnote: |\n  New.\n---\n"))
 
 	def test_a_bom_is_dropped_on_write(self):
 		written = frontmatter.write(

@@ -22,7 +22,8 @@ block is always last; an emptied note takes the header with it unless those
 keys remain. The proof text is passed through untouched, so a note edit
 produces a diff confined to the header rather than a whole-file rewrite. The
 header itself is always written with `\n`, whatever the file uses elsewhere:
-any ending reads, one is written, and the writer is idempotent (issue #36).
+`\n` and `\r\n` both read, one is written, and the writer is idempotent
+(spec §3, issue #36).
 
 `shown` is the last decision in the note's path and the reason this module
 knows the pane exists at all: what a document *displays* — the note, or a
@@ -47,8 +48,9 @@ BLOCK_INDICATOR = "|"
 #: but only one of them is written.
 INDENT = "  "
 
-#: The one line ending the header is written with. Any ending reads; choosing
-#: per file made the answer depend on the header being replaced (issue #36).
+#: The one line ending the header is written with (spec §3). `\r\n` reads as
+#: well; choosing per file made the answer depend on the header being replaced
+#: (issue #36).
 ENDING = "\n"
 
 #: `text` is the proof text, header stripped. `note` is None when there is no
