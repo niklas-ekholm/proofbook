@@ -19,9 +19,10 @@ Writing is the opposite, and strict: one form only, always `note: |` with
 2-space continuation lines. Keys ProofBook does not recognise come first, in
 the order they were written and line for line as they were written; the note
 block is always last; an emptied note takes the header with it unless those
-keys remain. The proof text is passed through untouched, and the header is
-written in the file's own dominant line ending, so a note edit produces a diff
-confined to the header rather than a whole-file rewrite.
+keys remain. The proof text is passed through untouched, so a note edit
+produces a diff confined to the header rather than a whole-file rewrite. The
+header itself is always written with `\n`, whatever the file uses elsewhere:
+any ending reads, one is written, and the writer is idempotent (issue #36).
 
 `shown` is the last decision in the note's path and the reason this module
 knows the pane exists at all: what a document *displays* — the note, or a
@@ -46,9 +47,9 @@ BLOCK_INDICATOR = "|"
 #: but only one of them is written.
 INDENT = "  "
 
-#: The line ending a file with no line in it at all is written with. Nothing
-#: about such a file says CRLF, and the note is the first line it will have.
-DEFAULT_ENDING = "\n"
+#: The one line ending the header is written with. Any ending reads; choosing
+#: per file made the answer depend on the header being replaced (issue #36).
+ENDING = "\n"
 
 #: `text` is the proof text, header stripped. `note` is None when there is no
 #: note to show — no header, no `note` key, or an empty block. `unknown` is
@@ -126,7 +127,6 @@ def write(data, note):
 	if document.malformed:
 		return None
 
-	ending = _dominant_ending(data)
 	lines = list(document.unknown) + _note_lines(note)
 	if not any(line.strip() for line in lines):
 		# An emptied note with nothing else in the header takes the header
@@ -140,8 +140,8 @@ def write(data, note):
 		# alternative is empty fences on a file ProofBook has nothing to say
 		# about — the plainer folder wins.
 		return document.text.encode("utf-8")
-	header = FENCE + ending + "".join(line + ending for line in lines)
-	return (header + FENCE + ending + document.text).encode("utf-8")
+	header = FENCE + ENDING + "".join(line + ENDING for line in lines)
+	return (header + FENCE + ENDING + document.text).encode("utf-8")
 
 
 def _note_lines(note):
@@ -188,21 +188,6 @@ def _normalised(note):
 		return None
 	indent = min(len(line) - len(line.lstrip()) for line in lines if line)
 	return "\n".join(line[indent:] for line in lines)
-
-
-def _dominant_ending(data):
-	"""The line ending most of the file already uses (spec §3).
-
-	Counted rather than sniffed off the first line: the header is written in
-	whichever ending the file mostly has, so a note edit does not quietly
-	convert a file, and a lone stray line does not decide for the rest.
-
-	Counted on the bytes, which need no decoding to answer this: `\r` and
-	`\n` are themselves in UTF-8 and cannot appear inside any other
-	character, so the count is the same either way.
-	"""
-	crlf = data.count(b"\r\n")
-	return "\r\n" if crlf > data.count(b"\n") - crlf else DEFAULT_ENDING
 
 
 def _decode(data):

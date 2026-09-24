@@ -450,13 +450,27 @@ class BytesTheWriterMustNotTouch(unittest.TestCase):
 		written = frontmatter.write(b"---\nnote: hi\n---\ncaps", "New.")
 		self.assertTrue(written.endswith(b"caps"))
 
-	def test_the_dominant_line_ending_is_the_one_the_header_is_written_in(self):
+	def test_the_header_is_always_written_with_lf(self):
 		written = frontmatter.write(
 			b"---\r\nnote: old\r\n---\r\ncaps\r\n", "New."
 		)
-		self.assertEqual(
-			written, b"---\r\nnote: |\r\n  New.\r\n---\r\ncaps\r\n"
+		self.assertEqual(written, b"---\nnote: |\n  New.\n---\ncaps\r\n")
+
+	def test_a_crlf_header_still_reads(self):
+		document = frontmatter.read(b"---\r\nnote: |\r\n  Old.\r\n---\r\ncaps\r\n")
+		self.assertEqual(document.note, "Old.")
+		self.assertEqual(document.text, "caps\r\n")
+
+	def test_a_mixed_ending_file_writes_the_same_twice(self):
+		# Issue #36. Under a counted ending, this CRLF header outnumbered the
+		# LF body until a shorter note was written into it, and the second
+		# write then came out LF: the first write decided the second.
+		mixed = (
+			b"---\r\nnote: |\r\n  A.\r\n  B.\r\n  C.\r\n---\r\n"
+			b"a\nb\nc\nd\ne\n"
 		)
+		once = frontmatter.write(mixed, "D.")
+		self.assertEqual(frontmatter.write(once, "D."), once)
 
 	def test_a_stray_crlf_does_not_make_a_unix_file_dos(self):
 		written = frontmatter.write(b"caps\r\nhandgloves\ncaps\n", "New.")

@@ -62,7 +62,7 @@ Stdlib `unittest`, run as `python3 -m unittest discover tests` with no install s
 
 - The filename is the subject: a subject containing hyphens, and a legacy `caps-WIP-NE.txt` reading as the subject *caps WIP NE* with no status.
 - The `status` and `owner` keys: lowercase on write, any case on read, `todo` never written, an unrecognised value reading as no status, a repeated known key malformed, and a write dropping any unknown line bearing a known key's name.
-- Frontmatter round-trips: canonical in → canonical out; lenient forms (one-line `note:`, odd indent) normalising on write; unknown keys preserved in order with the note block last; malformed input flagged read-only and never rewritten; line endings preserved; body passed through byte-for-byte.
+- Frontmatter round-trips: canonical in → canonical out; lenient forms (one-line `note:`, odd indent) normalising on write; unknown keys preserved in order with the note block last; malformed input flagged read-only and never rewritten; the header written with `\n` whatever the file uses, and writing twice giving the same bytes; body passed through byte-for-byte.
 - The collision rule producing `caps-2.txt`, incrementing until free.
 - The status cache: an entry valid while `(mtime, size)` matches; invalid on a mismatch; a placeholder never scheduled for a read; a version mismatch or unparseable cache treated as empty; departed paths pruned.
 - Listing → rows: depth, alphabetical order, empty folders present, non-`.txt` files absent.
@@ -119,7 +119,7 @@ A hand-rolled `Key: value` parser and writer, ~30 lines, shaped as **valid YAML*
 - **Order on write**: `status`, `owner`, then **unknown keys preserved verbatim** in original order, then the note block always last. A write that sets a known key drops any unknown line bearing that key's name.
 - **Malformed** — no closing fence, bytes that are not UTF-8, or a known key written twice — means the whole file is proof text. The page is **untaggable**: the row shows the malformed swatch (§4), every header write refuses, and the note pane shows the broken header **read-only**. Never overwrite bytes you did not understand; never hide the page. The designer fixes it in a text editor.
 - **A header left with no keys is removed entirely**, fences included — an emptied note on a `todo`, unowned page with no unknown keys.
-- UTF-8 strict; BOM tolerated on read, dropped on write. **Preserve the file's dominant line ending.** The body passes through byte-for-byte — no whitespace tidying, no trailing-newline normalisation. A note edit must diff only the header.
+- UTF-8 strict; BOM tolerated on read, dropped on write. **The header is always written with `\n`**; any line ending reads (#36). The body passes through byte-for-byte, its own endings included — no whitespace tidying, no trailing-newline normalisation. A note edit must diff only the header.
 - No frontmatter at all is valid. A header with no proof text after it is also valid.
 
 The filename never carries status or owner. **Nothing is stored twice.**
