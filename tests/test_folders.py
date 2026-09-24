@@ -96,6 +96,13 @@ class Deleting(unittest.TestCase):
 			"Move “fonts” to the Trash? It holds 0 proof-pages and other files.",
 		)
 
+	def test_a_folder_holding_only_folders_says_so(self):
+		entries = listing("outer/", "outer/inner/")
+		self.assertEqual(
+			folders.trash_question("outer", entries),
+			"Move “outer” to the Trash? It holds empty folders.",
+		)
+
 	def test_an_empty_folder_goes_unasked(self):
 		self.assertIsNone(folders.trash_question("empty", listing("empty/")))
 
@@ -117,10 +124,15 @@ class Plans(unittest.TestCase):
 
 	def test_a_folder_is_duplicated_as_name_2(self):
 		plan = folders.duplicate("caps", BOOK)
-		self.assertEqual(plan.intent, intents.Copy("caps", "caps-2"))
+		self.assertEqual(plan.intent, intents.CopyFolder("caps", "caps-2"))
+
+	def test_a_taken_folder_name_counts_up(self):
+		# "Incrementing until free": `caps-3`, never `caps-2-2`.
+		plan = folders.duplicate("caps", listing("caps/", "caps-2/"))
+		self.assertEqual(plan.collision.intent.destination, "caps-3")
 
 	def test_a_folder_moves_under_its_own_name(self):
-		plan = folders.move_into("caps/deep", "lower", BOOK)
+		plan = ops.move_into("caps/deep", "lower", BOOK)
 		self.assertEqual(plan.intent, intents.Rename("caps/deep", "lower/deep"))
 
 	def test_the_files_a_duplicate_copies(self):
@@ -128,6 +140,53 @@ class Plans(unittest.TestCase):
 			folders.contents("caps", BOOK),
 			["caps/a.txt", "caps/b.txt", "caps/deep", "caps/deep/c.txt", "caps/notes.md"],
 		)
+
+
+
+class Sentences(unittest.TestCase):
+	def test_nothing_to_set_still_says_what_was_skipped(self):
+		self.assertEqual(
+			folders.nothing_to_set("caps", 2),
+			"Nothing in “caps” can be set. 2 skipped — their headers can’t be read.",
+		)
+
+	def test_the_changes_read_as_the_rest_of_the_question(self):
+		self.assertEqual(folders.status_change("done"), "to done")
+		self.assertEqual(folders.owner_change("ne"), "to be owned by NE")
+		self.assertEqual(folders.owner_change(None), "to have no owner")
+
+	def test_a_duplicate_waiting_on_downloads_counts_proof_pages(self):
+		self.assertEqual(
+			folders.download_question("caps", 1),
+			"Duplicate “caps”? 1 proof-page must be downloaded first.",
+		)
+
+	def test_a_duplicate_reports_what_it_could_not_reset_or_read(self):
+		self.assertIsNone(folders.copy_report("caps", 0, 0))
+		self.assertEqual(
+			folders.copy_report("caps", 1, 2),
+			"Duplicated “caps”. 1 proof-page was copied as it was — its header can’t be "
+			"read. 2 files could not be read and were left out.",
+		)
+
+	def test_a_bulk_report_names_what_could_not_be_written(self):
+		self.assertEqual(
+			folders.report(3, 1, 2),
+			"Set 3 proof-pages. 1 skipped — its header can’t be read. "
+			"2 could not be read or written.",
+		)
+
+
+class Queries(unittest.TestCase):
+	def test_a_folder_is_a_folder(self):
+		self.assertTrue(folders.is_folder("caps/deep", BOOK))
+		self.assertFalse(folders.is_folder("caps/a.txt", BOOK))
+
+	def test_a_path_follows_a_move_of_itself_or_a_folder_above_it(self):
+		self.assertEqual(ops.moved("caps/deep/c.txt", "caps", "latin"), "latin/deep/c.txt")
+		self.assertEqual(ops.moved("caps", "caps", "latin"), "latin")
+		self.assertEqual(ops.moved("capsule.txt", "caps", "latin"), "capsule.txt")
+		self.assertIsNone(ops.moved(None, "caps", "latin"))
 
 
 FOLDERS = [("", 0), ("caps", 1), ("caps/deep", 2), ("lower", 1)]

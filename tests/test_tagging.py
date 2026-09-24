@@ -132,5 +132,14 @@ class Resetting(unittest.TestCase):
 	def test_a_malformed_header_refuses(self):
 		self.assertIsNone(tagging.reset(page("---", "status: wip", "caps")))
 
+
+class CopyingInAFolder(unittest.TestCase):
+	def test_a_page_is_reset_or_else_copied_as_it_was(self):
+		self.assertEqual(
+			tagging.for_copy(page("---", "status: wip", "---", "caps")), (page("caps"), False)
+		)
+		broken = page("---", "status: wip", "caps")
+		self.assertEqual(tagging.for_copy(broken), (broken, True))
+
 if __name__ == "__main__":
 	unittest.main()

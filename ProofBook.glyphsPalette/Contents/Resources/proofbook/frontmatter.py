@@ -23,11 +23,11 @@ line as they were written; then the note, always `note: |` with 2-space
 continuation lines. A header left with nothing in it goes, fences included.
 
 `read` hands back one `Header` and `write` takes one: a caller reads,
-`_replace`s the field it changes, and writes (#43). The proof text is passed through untouched, so a note edit
-produces a diff confined to the header rather than a whole-file rewrite. The
-header itself is always written with `\n`, whatever the file uses elsewhere:
-`\n` and `\r\n` both read, one is written, and the writer is idempotent
-(spec §3, issue #36).
+`_replace`s the field it changes, and writes (#43). The proof text is passed
+through untouched, so a note edit produces a diff confined to the header
+rather than a whole-file rewrite. The header itself is always written with
+`\n`, whatever the file uses elsewhere: `\n` and `\r\n` both read, one is
+written, and the writer is idempotent (spec §3, issue #36).
 
 `shown` is the last decision in the note's path and the reason this module
 knows the pane exists at all: what a document *displays* — the note, or a

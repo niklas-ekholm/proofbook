@@ -298,6 +298,12 @@ HATCH_SPACING = 3.0
 # when on. Not a logging framework.
 PROOFBOOK_DEBUG = False
 
+# How one page's header rewrite came out.
+REWRITE_DONE = "done"
+REWRITE_PLACEHOLDER = "placeholder"
+REWRITE_UNREADABLE = "unreadable"
+REWRITE_MALFORMED = "malformed"
+
 # The footer strip under the note pane, carrying *+ New proof-page* (spec §4).
 FOOTER_HEIGHT = 24
 FOOTER_BUTTON = "+ New proof-page"
@@ -450,17 +456,6 @@ def _save_cache(book, pages):
 		os.replace(temporary, path)
 	except OSError:
 		_debug("could not save the status cache:\n%s" % traceback.format_exc())
-
-
-def _moved(path, source, destination):
-	"""`path` after `source` moved to `destination`: itself, or inside it."""
-	if path is None:
-		return None
-	if path == source:
-		return destination
-	if path.startswith(source + tree.PATH_SEPARATOR):
-		return destination + path[len(source) :]
-	return path
 
 
 def _not_tagged(name):
@@ -1851,27 +1846,28 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _is_folder(self, path):
-		return any(entry.path == path and entry.is_dir for entry in self.entries)
+		return folders.is_folder(path, self.entries)
 
 	@objc.python_method
 	def _new_folder(self, parent):
 		"""*New subfolder*, named by the designer, inside `parent`."""
-		name = self._ask_subject("New subfolder", "The folder’s name.", "", "Create", folder=True)
+		name = self._ask_subject(
+			"New subfolder", "The folder’s name.", "", "Create", folder=True
+		)
 		if name is not None:
 			self._perform(folders.new_folder(parent, name, self.entries))
 
 	@objc.python_method
 	def _bulk_status(self, folder, value):
-		self._bulk(folder, tagging.setting_status(value), "to %s" % value)
+		change, _ = tagging.setting_status(value)
+		self._bulk(folder, change, folders.status_change(value))
 
 	@objc.python_method
 	def _bulk_owner(self, folder, owner):
 		if owner is not None:
 			Glyphs.defaults[LAST_OWNER_KEY] = status.written_owner(owner)
-			phrase = "to be owned by %s" % status.written_owner(owner)
-		else:
-			phrase = "to have no owner"
-		self._bulk(folder, tagging.setting_owner(owner), phrase)
+		change, _ = tagging.setting_owner(owner)
+		self._bulk(folder, change, folders.owner_change(owner))
 
 	@objc.python_method
 	def _bulk_new_owner(self, folder):
@@ -1880,7 +1876,7 @@ class ProofBookPalette(PalettePlugin):
 			self._bulk_owner(folder, owner)
 
 	@objc.python_method
-	def _bulk(self, folder, change_predict, phrase):
+	def _bulk(self, folder, change, phrase):
 		"""A recursive re-tag: confirmed with a count, then done, then reported.
 
 		The only action in ProofBook with no undo at all — a header write
@@ -1890,17 +1886,16 @@ class ProofBookPalette(PalettePlugin):
 		pages is a question); every header write is then made on the main
 		thread, from a fresh read, as for one page.
 		"""
-		change, predict = change_predict
 		name = folder.rpartition(tree.PATH_SEPARATOR)[2]
 		targets = folders.bulk(folder, self.entries, self.known)
 		if not targets.pages:
-			self._alert("There are no proof-pages in “%s” that can be set." % name)
+			self._alert(folders.nothing_to_set(name, len(targets.skipped)))
 			return
 		if not self._confirm(folders.question(targets, name, phrase), "Set"):
 			return
 
 		def apply(run=None):
-			self._apply_all(targets.pages, change, predict, len(targets.skipped))
+			self._apply_all(targets.pages, change, len(targets.skipped))
 
 		if targets.to_download:
 			self._start_download(targets.to_download, apply)
@@ -1908,42 +1903,25 @@ class ProofBookPalette(PalettePlugin):
 			apply()
 
 	@objc.python_method
-	def _apply_all(self, paths, change, predict, skipped):
-		"""Rewrite every page's header by `change`, then refresh and report once."""
-		done = 0
-		failed = []
+	def _apply_all(self, paths, change, skipped):
+		"""Rewrite every page's header by `change`, then refresh and report once.
+
+		A page still a placeholder — its download failed — is never read
+		inline (ADR-0004); it is counted with the ones that would not write.
+		"""
+		done = failed = 0
 		for path in paths:
-			filepath = self._page_path(path)
-			before = _stat(filepath)
-			if before[0]:
-				failed.append(path)  # Its download failed or was cancelled.
-				continue
-			try:
-				source = _read_bytes(filepath)
-			except OSError:
-				failed.append(path)
-				continue
-			data = change(source)
-			if data is None:
+			before = _stat(self._page_path(path))
+			failure = "Could not set “%s”" % _name(self._page_path(path))
+			outcome = self._rewrite(path, change, before, failure)
+			if outcome == REWRITE_DONE:
+				done += 1
+			elif outcome == REWRITE_MALFORMED:
 				skipped += 1  # Its header turned out unreadable once read.
-				continue
-			if data != source and not self._replace(
-				filepath, data, "Could not set “%s”" % _name(filepath)
-			):
-				failed.append(path)
-				continue
-			after = _stat(filepath)
-			known = self._learned(path, frontmatter.read(data), after)
-			if before[1] is not None and after[1] is not None:
-				self.written[path] = cache.Written(
-					known, before[1], before[2], after[1], after[2]
-				)
-			done += 1
-		line = folders.report(done, skipped)
-		if failed:
-			line += " %d could not be read or written." % len(failed)
+			else:
+				failed += 1
 		self._resolve()
-		self._alert(line)
+		self._alert(folders.report(done, skipped, failed))
 
 	@objc.python_method
 	def _confirm(self, question, button):
@@ -1963,27 +1941,30 @@ class ProofBookPalette(PalettePlugin):
 		report afterwards, rather than stopping the copy.
 		"""
 		name = path.rpartition(tree.PATH_SEPARATOR)[2]
-		waiting = [
-			entry.path for entry in folders.inside(path, self.entries) if entry.placeholder
-		]
+		inside = folders.inside(path, self.entries)
+		waiting = [entry.path for entry in inside if entry.placeholder]
 		plan = folders.duplicate(path, self.entries)
 
 		def copy(run=None):
 			self._perform(plan)
 
 		if waiting:
-			question = "Duplicate “%s”? %d must be downloaded first." % (name, len(waiting))
-			if self._confirm(question, "Duplicate"):
+			pages = len([entry for entry in tree.pages(inside) if entry.placeholder])
+			if self._confirm(folders.download_question(name, pages), "Duplicate"):
 				self._start_download(waiting, copy)
 			return
 		copy()
 
 	@objc.python_method
 	def _copy_folder(self, source, destination):
-		"""The recursive copy itself. Returns how many pages went byte for byte."""
+		"""The recursive copy itself: `(pages copied as they were, files left out)`.
+
+		Every file is asked the placeholder flag first: one whose download
+		failed is left out and counted, never read inline (ADR-0004).
+		"""
 		root = self._page_path(source)
 		target = self._page_path(destination)
-		verbatim = 0
+		verbatim = missing = 0
 		os.mkdir(target)  # Exclusive: never into a folder that is there.
 		for path in folders.contents(source, self.entries):
 			relative = path[len(source) + 1 :]
@@ -1992,17 +1973,21 @@ class ProofBookPalette(PalettePlugin):
 			if os.path.isdir(from_path):
 				os.makedirs(to_path, exist_ok=True)
 				continue
-			data = _read_bytes(from_path)
+			if _is_placeholder(from_path):
+				missing += 1
+				continue
+			try:
+				data = _read_bytes(from_path)
+			except OSError:
+				missing += 1
+				continue
 			if names.is_proof_page(os.path.basename(from_path)):
-				reset = tagging.reset(data)
-				if reset is None:
-					verbatim += 1
-				else:
-					data = reset
+				data, as_it_was = tagging.for_copy(data)
+				verbatim += as_it_was
 			os.makedirs(os.path.dirname(to_path), exist_ok=True)
 			with open(to_path, "xb") as handle:
 				handle.write(data)
-		return verbatim
+		return verbatim, missing
 
 	# -- The file verbs (#23) --------------------------------------------
 
@@ -2269,36 +2254,54 @@ class ProofBookPalette(PalettePlugin):
 		a note committed a moment ago is in them and survives (spec §6,
 		*Header writes*). What they become is the core's decision.
 		"""
-		filepath = self._page_path(path)
-		name = _name(filepath)
-		if before[0]:
+		name = _name(self._page_path(path))
+		outcome = self._rewrite(path, change, before, "Could not tag “%s”" % name)
+		if outcome == REWRITE_PLACEHOLDER:
 			# Evicted again since it was asked about: never read inline.
 			self._alert(_not_tagged(name))
 			return
-		try:
-			source = _read_bytes(filepath)
-		except OSError as error:
-			self._alert("Could not read “%s”, so it was not tagged: %s" % (name, error))
-			self._resolve()
-			return
-		data = change(source)
-		if data is None:
+		if outcome == REWRITE_MALFORMED:
 			# Refused, once, on the click, in the note pane's voice: a page
 			# whose header ProofBook cannot parse is untaggable (ADR-0006).
 			self._alert(_untaggable(name))
 			return
-		if data != source and self._replace(filepath, data, "Could not tag “%s”" % name):
-			# The row shows the new status at once (#40), and keeps showing
-			# it against any walk that started before the write. Our own
-			# write, so the stat after it is the one to stamp.
-			after = _stat(filepath)
-			known = self._learned(path, frontmatter.read(data), after)
-			if before[1] is not None and after[1] is not None:
-				self.written[path] = cache.Written(
-					known, before[1], before[2], after[1], after[2]
-				)
+		if outcome == REWRITE_UNREADABLE:
+			self._alert("Could not read “%s”, so it was not tagged." % name)
 		# ProofBook's own write, so the tree is refreshed (spec §6).
 		self._resolve()
+
+	@objc.python_method
+	def _rewrite(self, path, change, before, failure):
+		"""Read one downloaded page, change its header, write it: on this thread.
+
+		The one path every header write from a tag takes — the swatch, the
+		menu, and each page of a bulk verb — so each reads the bytes at the
+		moment of writing and none can write back a header another has since
+		changed (spec §6). The row shows the result at once (#40) and keeps
+		showing it against any walk that started before the write.
+		"""
+		filepath = self._page_path(path)
+		if before[0]:
+			return REWRITE_PLACEHOLDER
+		try:
+			source = _read_bytes(filepath)
+		except OSError:
+			return REWRITE_UNREADABLE
+		data = change(source)
+		if data is None:
+			return REWRITE_MALFORMED
+		if data == source:
+			return REWRITE_DONE
+		if not self._replace(filepath, data, failure):
+			return REWRITE_UNREADABLE
+		# Our own write, so the stat after it is the one to stamp.
+		after = _stat(filepath)
+		known = self._learned(path, frontmatter.read(data), after)
+		if before[1] is not None and after[1] is not None:
+			self.written[path] = cache.Written(
+				known, before[1], before[2], after[1], after[2]
+			)
+		return REWRITE_DONE
 
 	@objc.python_method
 	def _retag_placeholder(self, path, change, predict):
@@ -2396,7 +2399,7 @@ class ProofBookPalette(PalettePlugin):
 		intent = plan.intent
 		if intent is None:
 			return
-		if isinstance(intent, intents.Copy) and self._is_folder(intent.source):
+		if isinstance(intent, intents.CopyFolder):
 			self._copy_folder_and_report(intent)
 		elif isinstance(intent, intents.Copy):
 			self._create(intent.destination, data)
@@ -2417,26 +2420,17 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _copy_folder_and_report(self, intent):
+		name = _name(intent.source)
 		try:
-			verbatim = self._copy_folder(intent.source, intent.destination)
+			verbatim, missing = self._copy_folder(intent.source, intent.destination)
 		except OSError as error:
-			self._alert("Could not duplicate “%s”: %s" % (_name(intent.source), error))
+			self._alert("Could not duplicate “%s”: %s" % (name, error))
 			self._resolve()
 			return
 		self._resolve()
-		if verbatim:
-			self._alert(
-				"Duplicated “%s”. %d proof-page%s copied as %s — %s can’t be read, "
-				"so %s claims could not be reset."
-				% (
-					_name(intent.source),
-					verbatim,
-					"" if verbatim == 1 else "s",
-					"it was" if verbatim == 1 else "they were",
-					"its header" if verbatim == 1 else "their headers",
-					"its" if verbatim == 1 else "their",
-				)
-			)
+		line = folders.copy_report(name, verbatim, missing)
+		if line is not None:
+			self._alert(line)
 
 	@objc.python_method
 	def _create(self, path, data):
@@ -2514,7 +2508,12 @@ class ProofBookPalette(PalettePlugin):
 		else:
 			# ProofBook renamed this one, so the selection follows it. Only a
 			# rename ProofBook did not perform reads as a delete (spec §6).
-			self.selectedPath = _moved(self.selectedPath, rename.source, rename.destination)
+			source, destination = rename.source, rename.destination
+			self.selectedPath = ops.moved(self.selectedPath, source, destination)
+			# A renamed or moved folder stays as open as it was.
+			self.expanded = {
+				ops.moved(path, source, destination) for path in self.expanded
+			}
 			# The page is the same page: its cached status and what the row
 			# shows go with it, so a renamed placeholder keeps its status.
 			self._carry(rename.source, rename.destination)
@@ -2523,7 +2522,7 @@ class ProofBookPalette(PalettePlugin):
 			# designer may be typing into. Left behind, it would open a path
 			# that is gone at the next commit point and report a file nobody
 			# deleted as missing.
-			self.notePath = _moved(self.notePath, rename.source, rename.destination)
+			self.notePath = ops.moved(self.notePath, rename.source, rename.destination)
 		# Refresh either way: a rename that failed usually means the folder
 		# moved underneath the palette, which is exactly when the tree is
 		# stale. This is the "after its own writes" half of spec §6.
@@ -2537,9 +2536,9 @@ class ProofBookPalette(PalettePlugin):
 		validates at the new path; without this, a renamed placeholder would
 		lose its status until someone downloaded it.
 		"""
-		for mapping in (self.known, self.cachePages or {}, self.stamps):
+		for mapping in (self.known, self.cachePages or {}, self.stamps, self.written):
 			for path in list(mapping):
-				moved = _moved(path, source, destination)
+				moved = ops.moved(path, source, destination)
 				if moved != path:
 					mapping[moved] = mapping.pop(path)
 					if mapping is self.cachePages:
@@ -3484,7 +3483,13 @@ class ProofBookPalette(PalettePlugin):
 		does, and it runs only if the run finished for this proof-book — not
 		if it was cancelled, or the proof-book changed underneath it.
 		"""
-		if not paths or self.bookPath is None or self.download is not None:
+		if not paths or self.bookPath is None:
+			return
+		if self.download is not None:
+			# Said, not swallowed: a bulk verb was confirmed and will not run.
+			self._alert(
+				"A download is already running. Try again when it has finished."
+			)
 			return
 		run = self.download = reading.Download(paths)
 		self.downloadAfter = after

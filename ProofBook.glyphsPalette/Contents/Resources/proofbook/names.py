@@ -54,7 +54,8 @@ def typed_subject(text):
 		return None, "A subject cannot start with a dot; the file would be hidden."
 	if "/" in subject or ":" in subject:
 		return None, "A subject cannot contain “/” or “:”."
-	if any(unicodedata.category(character) in ("Cc", "Cf", "Zl", "Zp") for character in subject):
+	invisible = ("Cc", "Cf", "Zl", "Zp")
+	if any(unicodedata.category(character) in invisible for character in subject):
 		return None, "A subject cannot contain line breaks or invisible characters."
 	return unicodedata.normalize("NFC", subject), None
 
@@ -68,11 +69,8 @@ def typed_folder(text):
 	if not name:
 		return None, "A folder needs a name."
 	if name.lower().endswith(EXTENSION):
-		return None, "A folder name cannot end in “%s”; it would read as a proof-page." % EXTENSION
-	subject, problem = typed_subject(name)
-	if subject is None:
-		return None, problem
-	return subject, None
+		return None, "A folder name cannot end in “%s”." % EXTENSION
+	return typed_subject(name)
 
 
 def display_subject(subject):
