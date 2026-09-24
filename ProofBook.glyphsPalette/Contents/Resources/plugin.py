@@ -420,6 +420,27 @@ def _save_cache(book, pages):
 		_debug("could not save the status cache:\n%s" % traceback.format_exc())
 
 
+def _not_tagged(name):
+	return "“%s” could not be downloaded, so it was not tagged." % name
+
+
+def _refused(answer, name, verb):
+	"""Why a placeholder read was not started: `reading.BUSY` or `FULL`."""
+	if answer == reading.BUSY:
+		return "“%s” is still downloading, so it was not %s." % (name, verb)
+	return (
+		"Too many pages are downloading at once, so “%s” was not %s. "
+		"The network may not be answering." % (name, verb)
+	)
+
+
+def _untaggable(name):
+	return (
+		"The header of “%s” is not readable, so it was not tagged. "
+		"Fix it in a text editor." % name
+	)
+
+
 def _not_downloaded(name):
 	return "Could not read “%s”; it may not be downloaded yet." % name
 
@@ -1116,6 +1137,9 @@ class ProofBookPalette(PalettePlugin):
 		# stamps made on the main thread since the running walk took its copy.
 		self.cacheSaved = None
 		self.stamps = {}
+		# Placeholder tags in flight: what each row shows until its page
+		# lands, laid over whatever a walk says meanwhile.
+		self.pendingTags = {}
 		# Single-page placeholder reads (spec §7): one per page, capped, each
 		# with a deadline; `expiries` is what each one says when it passes.
 		self.flights = reading.Flights()
@@ -1562,23 +1586,42 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def tagPage(self, path):
-		"""A click on a proof-page's swatch: cycle its status (spec §8).
+		"""A click on a proof-page's swatch: cycle its status (spec §8)."""
+		self._retag(path, tagging.cycled, tagging.predicted)
 
-		Status lives in the header (ADR-0006), so this rewrites the file in
-		place — it never renames, and never collides. The bytes are read at
-		the moment of writing, on the main thread, so a note committed a
-		moment ago is in them and survives (spec §6, *Header writes*). What
-		they become is the core's decision; this reads and writes.
+	@objc.python_method
+	def _retag(self, path, change, predict):
+		"""Rewrite one page's header by `change`: the swatch, and later the menu.
 
-		A placeholder is refused rather than read: reading one blocks Glyphs
-		until it downloads, and forever offline (#38). Downloading it on the
-		click, off the main thread, is #49's.
+		Status lives in the header (ADR-0006), so a tag rewrites the file in
+		place — it never renames, and never collides. `change` takes the
+		page's bytes to the bytes to write, or None for a header it cannot
+		parse. `predict` takes what the row shows to what it will show, for
+		the optimistic row on a page that has to download first (#40).
+
+		A downloaded page is tagged here and now, on the main thread. A
+		placeholder is downloaded first, on a thread of its own (#42): one
+		page is implicit, many pages is a question.
+		"""
+		before = _stat(self._page_path(path))
+		if before[0]:
+			self._retag_placeholder(path, change, predict)
+			return
+		self._retag_inline(path, change, before)
+
+	@objc.python_method
+	def _retag_inline(self, path, change, before):
+		"""Tag a downloaded page: read, change, write, all at the click.
+
+		The bytes are read at the moment of writing, on the main thread, so
+		a note committed a moment ago is in them and survives (spec §6,
+		*Header writes*). What they become is the core's decision.
 		"""
 		filepath = self._page_path(path)
-		name = os.path.basename(filepath)
-		before = _stat(filepath)
+		name = _name(filepath)
 		if before[0]:
-			self._alert("“%s” is not downloaded yet, so it was not tagged." % name)
+			# Evicted again since it was asked about: never read inline.
+			self._alert(_not_tagged(name))
 			return
 		try:
 			source = _read_bytes(filepath)
@@ -1586,19 +1629,16 @@ class ProofBookPalette(PalettePlugin):
 			self._alert("Could not read “%s”, so it was not tagged: %s" % (name, error))
 			self._resolve()
 			return
-		data = tagging.cycled(source)
+		data = change(source)
 		if data is None:
 			# Refused, once, on the click, in the note pane's voice: a page
 			# whose header ProofBook cannot parse is untaggable (ADR-0006).
-			self._alert(
-				"The header of “%s” is not readable, so it was not tagged. "
-				"Fix it in a text editor." % name
-			)
+			self._alert(_untaggable(name))
 			return
 		if data != source and self._replace(filepath, data, "Could not tag “%s”" % name):
 			# The row shows the new status at once (#40), and keeps showing
-			# it against any walk that started before the write.
-			# Our own write, so the stat after it is the one to stamp.
+			# it against any walk that started before the write. Our own
+			# write, so the stat after it is the one to stamp.
 			after = _stat(filepath)
 			known = self._learned(path, frontmatter.read(data), after)
 			if before[1] is not None and after[1] is not None:
@@ -1607,6 +1647,87 @@ class ProofBookPalette(PalettePlugin):
 				)
 		# ProofBook's own write, so the tree is refreshed (spec §6).
 		self._resolve()
+
+	@objc.python_method
+	def _retag_placeholder(self, path, change, predict):
+		"""Tag a page the provider has not downloaded (#42, spec §7).
+
+		The row changes on the click, from what the cache says it is now; the
+		page downloads on a thread of its own; and when it lands, the tag is
+		made on the main thread from a fresh read, exactly as for a page that
+		was already local. Offline the read hangs rather than failing, so the
+		deadline is on the notice: past it the attempt is **abandoned** — the
+		row reverts, and a read that lands later only fills the cache.
+		"""
+		name = _name(self._page_path(path))
+		book = self.bookPath
+		previous = self.known.get(path)
+		if previous is not None and previous.malformed:
+			self._alert(_untaggable(name))
+			return
+		answer = self._fetch(
+			path,
+			lambda data, stat, wanted: self._placeholder_tagged(
+				book, path, change, data, stat, wanted
+			),
+			lambda: self._tag_abandoned(book, path, _not_tagged(name)),
+		)
+		if answer != reading.ADMITTED:
+			self._alert(_refused(answer, name, "tagged"))
+			return
+		if previous is not None:
+			# Held apart from `known`, so a walk landing while the page
+			# downloads cannot put the old status back under the click. A
+			# page nothing is known about has nothing to predict from, and
+			# shows as unknown until it lands.
+			self.pendingTags[path] = predict(previous)
+			self.known[path] = self.pendingTags[path]
+			self._draw()
+
+	@objc.python_method
+	def _tag_abandoned(self, book, path, message):
+		"""Put the row back as it is known to be, and say why it did not change."""
+		if book != self.bookPath:
+			return  # A deadline for a proof-book this palette has left.
+		self._settle(path)
+		self._alert(message)
+
+	@objc.python_method
+	def _settle(self, path):
+		"""Drop an in-flight tag's prediction; the row shows what is known."""
+		if self.pendingTags.pop(path, None) is None:
+			return
+		page = (self.cachePages or {}).get(path)
+		if page is None:
+			self.known.pop(path, None)
+		else:
+			self.known[path] = tree.Known(page.status, page.owner, page.malformed)
+		self._draw()
+
+	@objc.python_method
+	def _placeholder_tagged(self, book, path, change, data, stat, wanted):
+		"""The placeholder a tag was waiting on landed, or failed, or came too late."""
+		document = self._landed_placeholder(book, path, data, stat)
+		if book != self.bookPath:
+			return
+		if not wanted:
+			# Abandoned: the row was settled and the designer told. What
+			# landed only fills in what the row shows now.
+			self._draw()
+			return
+		self._settle(path)
+		name = _name(self._page_path(path))
+		if document is None:
+			self._alert(_not_tagged(name))
+			return
+		if document.malformed:
+			# Downloading it does not make an unreadable header taggable; the
+			# row shows it as it is.
+			self._alert(_untaggable(name))
+			return
+		# On disk now: tagged from a fresh read, by the same path as any
+		# local page, so a note committed meanwhile is in the bytes it writes.
+		self._retag_inline(path, change, _stat(self._page_path(path)))
 
 	# The collision path below has no caller while tagging writes in place
 	# (ADR-0006). It is kept, tested, for *Rename…* and *Move to* (#23),
@@ -1735,23 +1856,15 @@ class ProofBookPalette(PalettePlugin):
 			),
 			lambda: self._alert(_not_downloaded(name)),
 		)
-		if answer == reading.BUSY:
-			self._alert("“%s” is still downloading." % name)
-		elif answer == reading.FULL:
-			self._alert(
-				"Too many pages are downloading at once, so “%s” was not "
-				"opened. The network may not be answering." % name
-			)
+		if answer != reading.ADMITTED:
+			self._alert(_refused(answer, name, "opened"))
 
 	@objc.python_method
 	def _placeholder_displayed(self, book, path, data, stat, wanted):
 		"""The selected placeholder landed, or failed, or came too late."""
+		document = self._landed_placeholder(book, path, data, stat)
 		if book != self.bookPath:
-			return  # Read for a proof-book this palette is no longer showing.
-		if data is not None:
-			# Wanted or not, it is on disk and read: the cache has it (#42).
-			document = frontmatter.read(data)
-			self._learned(path, document, stat)
+			return
 		if not wanted:
 			self._draw()
 			return  # Abandoned: the designer was told it did not happen.
@@ -1765,6 +1878,19 @@ class ProofBookPalette(PalettePlugin):
 		self._show_note(path, document)
 		# It is on disk now: the listing, the hint and its status all moved.
 		self._resolve()
+
+	@objc.python_method
+	def _landed_placeholder(self, book, path, data, stat):
+		"""What a placeholder read brought back, taken in. None if nothing did.
+
+		Wanted or not, a page that was read is in the cache (#42) — unless
+		it was read for a proof-book this palette is no longer showing.
+		"""
+		if book != self.bookPath or data is None:
+			return None
+		document = frontmatter.read(data)
+		self._learned(path, document, stat)
+		return document
 
 	@objc.python_method
 	def _fetch(self, path, landed, expired):
@@ -2216,6 +2342,7 @@ class ProofBookPalette(PalettePlugin):
 			self.cacheSaved = None
 			self.stamps = {}
 			self.written = {}
+			self.pendingTags = {}
 			# The proof-book changed underneath the download, which is the
 			# one thing that cancels it (spec §7).
 			if self.download is not None:
@@ -2307,6 +2434,7 @@ class ProofBookPalette(PalettePlugin):
 		self.known, self.written = cache.overridden(
 			self.known, self.entries, self.written
 		)
+		self.known.update(self.pendingTags)
 		self._redraw_soon()
 
 	@objc.python_method
@@ -2349,6 +2477,7 @@ class ProofBookPalette(PalettePlugin):
 		self.known, self.written = cache.overridden(
 			walked.known, walked.entries, self.written
 		)
+		self.known.update(self.pendingTags)
 		# A page that has left the listing takes the selection with it — and
 		# nothing else: the Edit view is left exactly as it is, because
 		# deleting a file must not blank a tab that may still be being read

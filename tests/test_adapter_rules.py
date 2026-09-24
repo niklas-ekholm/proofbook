@@ -669,7 +669,13 @@ class AdapterRules(unittest.TestCase):
 	def test_no_inline_read_can_reach_a_placeholder(self):
 		# ADR-0004: a placeholder read blocks until it downloads, and forever
 		# offline (#38). Every main-thread read asks the flag first.
-		for name in ("_read_page", "_display_page", "tagPage", "_write_note"):
+		for name in (
+			"_read_page",
+			"_display_page",
+			"_retag",
+			"_retag_inline",
+			"_write_note",
+		):
 			with self.subTest(method=name):
 				called = pysource.called_names(pysource.function(self.adapter, name))
 				self.assertTrue(
@@ -688,6 +694,19 @@ class AdapterRules(unittest.TestCase):
 		# waits behind a walk that is not there.
 		later = pysource.function(self.adapter, "_walk_later")
 		self.assertIn("failed", pysource.keyword_argument_names(later))
+
+	def test_a_placeholder_is_tagged_by_downloading_it_first(self):
+		# #42: one page is implicit. The read goes the same capped,
+		# deadlined way a placeholder selection does, and the tag itself is
+		# then made by the inline path, from a fresh read on the main thread.
+		self.assertIn(
+			"self._fetch",
+			pysource.called_names(pysource.function(self.adapter, "_retag_placeholder")),
+		)
+		self.assertIn(
+			"self._retag_inline",
+			pysource.called_names(pysource.function(self.adapter, "_placeholder_tagged")),
+		)
 
 	def test_a_placeholder_read_gets_a_thread_of_its_own(self):
 		# #42: never the shared worker, which one offline read would wedge
@@ -884,16 +903,21 @@ class AdapterRules(unittest.TestCase):
 		# ADR-0005: reading a status out of a header and choosing the next
 		# one is string work, and string work lives where a test can reach it.
 		tagging = pysource.function(self.adapter, "tagPage")
-		self.assertIn("tagging.cycled", pysource.called_names(tagging))
+		self.assertTrue(pysource.attribute_reads(tagging, "tagging.cycled"))
 		self.assertEqual(pysource.attribute_reads(tagging, "status.STATUSES"), [])
-		self.assertEqual(
-			pysource.attribute_reads(tagging, "status.next_stored"), []
+		self.assertEqual(pysource.attribute_reads(tagging, "status.next_stored"), [])
+		self.assertTrue(pysource.attribute_reads(tagging, "tagging.predicted"))
+		inline = pysource.function(self.adapter, "_retag_inline")
+		self.assertIn(
+			"change",
+			pysource.called_names(inline),
+			"the bytes a tag writes are the core's change, not the adapter's",
 		)
 
 	def test_a_tag_rewrites_the_page_in_place_and_never_renames(self):
 		# ADR-0006: status lives in the header. A tag that still renamed
 		# would cost the page its `git log` history, which is why it moved.
-		tagging = pysource.function(self.adapter, "tagPage")
+		tagging = pysource.function(self.adapter, "_retag_inline")
 		called = pysource.called_names(tagging)
 		self.assertIn("self._replace", called)
 		for rename in ("self._rename", "self._perform", "os.rename"):
