@@ -619,13 +619,84 @@ class AdapterRules(unittest.TestCase):
 		became_key = pysource.function(self.adapter, "windowBecameKey_")
 		self.assertIsNotNone(became_key, "nothing observes become-key")
 		self.assertIn("self._resolve", pysource.called_names(became_key))
-		resolve = pysource.function(self.adapter, "_resolve")
 		self.assertIn(
-			"self._listing",
-			pysource.called_names(resolve),
+			"self._walk_later",
+			pysource.called_names(pysource.function(self.adapter, "_resolve")),
 			"a resolve that does not re-walk the folder leaves a file added "
 			"in Finder invisible until the window is reopened",
 		)
+		self.assertIn(
+			"self._listing",
+			pysource.called_names(pysource.function(self.adapter, "_walk")),
+		)
+
+	def test_the_listing_is_walked_off_the_main_thread(self):
+		# Spec §6, #40: ~0.7s for 400 cloud pages, on every become-key. The
+		# walk is a job on the worker; the main thread only draws its result.
+		resolve = pysource.function(self.adapter, "_resolve")
+		self.assertNotIn("self._listing", pysource.called_names(resolve))
+		self.assertNotIn("self._headers", pysource.called_names(resolve))
+		later = pysource.function(self.adapter, "_walk_later")
+		self.assertIn("self.worker.submit", pysource.called_names(later))
+		self.assertIn("self._background", pysource.called_names(later))
+
+	def test_the_listing_reads_the_placeholder_flag_and_no_other(self):
+		# Spec §7: `SF_DATALESS` is the only flag the listing reads.
+		self.assertIn(
+			"_is_placeholder",
+			pysource.called_names(pysource.function(self.adapter, "_listing")),
+		)
+		self.assertEqual(
+			pysource.module_constant(self.adapter, "SF_DATALESS"), 0x40000000
+		)
+
+	def test_no_inline_read_can_reach_a_placeholder(self):
+		# ADR-0004: a placeholder read blocks until it downloads, and forever
+		# offline (#38). Every main-thread read asks the flag first.
+		for name in ("_read_page", "_display_page", "tagPage", "_write_note"):
+			with self.subTest(method=name):
+				self.assertIn(
+					"_is_placeholder",
+					pysource.called_names(pysource.function(self.adapter, name)),
+				)
+
+	def test_the_selection_is_routed_by_the_core(self):
+		self.assertIn(
+			"reading.route",
+			pysource.called_names(pysource.function(self.adapter, "_display_page")),
+		)
+
+	def test_a_failed_walk_does_not_stop_the_walks_after_it(self):
+		# A walk that raised must hand its slot back, or every later refresh
+		# waits behind a walk that is not there.
+		later = pysource.function(self.adapter, "_walk_later")
+		self.assertIn("failed", pysource.keyword_argument_names(later))
+
+	def test_a_placeholder_read_gets_a_thread_of_its_own(self):
+		# #42: never the shared worker, which one offline read would wedge
+		# for the session; and capped, and with a deadline on the notice.
+		fetch = pysource.function(self.adapter, "_fetch")
+		called = pysource.called_names(fetch)
+		self.assertIn("threading.Thread", called)
+		self.assertNotIn("self.worker.submit", called)
+		self.assertIn("self.flights.admit", called)
+		self.assertIn("self.performSelector_withObject_afterDelay_", called)
+		self.assertIn(
+			"NSObject.cancelPreviousPerformRequestsWithTarget_selector_object_",
+			pysource.called_names(pysource.function(self.adapter, "_fetched")),
+		)
+
+	def test_every_background_failure_reaches_the_ui(self):
+		# Spec §9: an exception on a background thread otherwise vanishes.
+		background = pysource.function(self.adapter, "_background")
+		self.assertIn("self._on_main", pysource.called_names(background))
+		self.assertIn(
+			"self._alert",
+			pysource.called_names(
+				pysource.function(self.adapter, "_background_failed")
+			),
+		)
+		self.assertIs(pysource.module_constant(self.adapter, "PROOFBOOK_DEBUG"), False)
 
 	def test_the_refresh_rides_become_key_and_nothing_else(self):
 		# No FSEvents watcher, no polling timer, and above all nothing on
@@ -695,8 +766,8 @@ class AdapterRules(unittest.TestCase):
 		# Deleting a file must not blank a tab that may still be being read,
 		# so the selection is asked of the listing and the Edit view is left
 		# to the core's refresh answer (spec §6).
-		resolve = pysource.function(self.adapter, "_resolve")
-		called = pysource.called_names(resolve)
+		listed = pysource.function(self.adapter, "_listed")
+		called = pysource.called_names(listed)
 		self.assertIn("tree.selection_after", called)
 		self.assertIn("self._refresh_page", called)
 
@@ -984,8 +1055,8 @@ class AdapterRules(unittest.TestCase):
 	def test_the_pane_is_emptied_when_the_selected_page_goes(self):
 		# "Clear the selection, empty the note pane, and leave the Edit view
 		# exactly as it is" (spec §6).
-		resolve = pysource.function(self.adapter, "_resolve")
-		self.assertIn("self._show_note", pysource.called_names(resolve))
+		listed = pysource.function(self.adapter, "_listed")
+		self.assertIn("self._show_note", pysource.called_names(listed))
 
 	def test_the_pane_empties_when_the_selection_is_cleared(self):
 		# Not only when the page vanishes: a click into the empty space below
