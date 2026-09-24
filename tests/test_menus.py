@@ -91,6 +91,21 @@ class Owners(unittest.TestCase):
 		owner = find(menus.page_menu(row(owner=None), [], None, True), "Set owner")
 		self.assertIsNone(owner.items[-1].action)
 
+	def test_clear_owner_is_live_where_the_owner_is_not_known(self):
+		for shown in (tree.UNKNOWN, tree.WALKING):
+			with self.subTest(shown=shown):
+				owner = find(
+					menus.page_menu(row(shown=shown), [], None, None), "Set owner"
+				)
+				self.assertEqual(owner.items[-1].action, (menus.SET_OWNER, None))
+
+	def test_an_owner_the_ui_would_refuse_is_not_offered(self):
+		known = {
+			"a.txt": tree.Known(None, "Niklas Ekholm", False),
+			"b.txt": tree.Known(None, "ne", False),
+		}
+		self.assertEqual(menus.owners(known), ["NE"])
+
 
 class TheNote(unittest.TestCase):
 	def test_a_page_with_a_note_offers_to_edit_it(self):
@@ -103,6 +118,24 @@ class TheNote(unittest.TestCase):
 	def test_a_page_whose_note_is_not_known_offers_to_edit(self):
 		# A placeholder is not read to build a menu.
 		self.assertEqual(menus.page_menu(row(), [], None, None)[-1].title, "Edit note")
+
+
+class NoteKnowledge(unittest.TestCase):
+	def test_a_page_with_a_note_has_one(self):
+		from proofbook import frontmatter
+
+		self.assertTrue(menus.has_note(frontmatter.read(b"---\nnote: Hi.\n---\ncaps\n")))
+
+	def test_a_page_without_one_does_not(self):
+		from proofbook import frontmatter
+
+		self.assertFalse(menus.has_note(frontmatter.read(b"caps\n")))
+
+	def test_an_unread_or_unreadable_page_is_not_known(self):
+		from proofbook import frontmatter
+
+		self.assertIsNone(menus.has_note(None))
+		self.assertIsNone(menus.has_note(frontmatter.read(b"---\nnote: a\n")))
 
 
 class Malformed(unittest.TestCase):

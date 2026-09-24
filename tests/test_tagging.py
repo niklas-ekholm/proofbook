@@ -83,31 +83,35 @@ class Setting(unittest.TestCase):
 	"""The context menu's verbs: a field set outright, and its prediction."""
 
 	def test_a_status_is_set_outright(self):
-		change, predict = tagging.setting(status="done")
+		change, predict = tagging.setting_status("done")
 		self.assertEqual(
 			change(page("---", "owner: NE", "---", "caps")),
 			page("---", "status: done", "owner: NE", "---", "caps"),
 		)
-		self.assertEqual(predict(tree.Known("wip", "NE", False)), tree.Known("done", "NE", False))
+		self.assertEqual(
+			predict(tree.Known("wip", "NE", False)), tree.Known("done", "NE", False)
+		)
 
 	def test_todo_removes_the_key(self):
-		change, predict = tagging.setting(status="todo")
+		change, predict = tagging.setting_status("todo")
 		self.assertEqual(change(page("---", "status: wip", "---", "caps")), page("caps"))
 		self.assertEqual(predict(tree.Known("wip", None, False)).status, None)
 
 	def test_an_owner_is_set_uppercase(self):
-		change, predict = tagging.setting(owner="ne")
+		change, predict = tagging.setting_owner("ne")
 		self.assertEqual(change(page("caps")), page("---", "owner: NE", "---", "caps"))
 		self.assertEqual(predict(tree.Known(None, None, False)).owner, "NE")
 
 	def test_clearing_the_owner_removes_the_key(self):
-		change, predict = tagging.setting(owner=None)
+		change, predict = tagging.setting_owner(None)
 		self.assertEqual(change(page("---", "owner: NE", "---", "caps")), page("caps"))
 		self.assertIsNone(predict(tree.Known(None, "NE", False)).owner)
 
 	def test_a_malformed_header_refuses(self):
-		change, _ = tagging.setting(status="wip")
-		self.assertIsNone(change(page("---", "owner: NE", "owner: MP", "---", "caps")))
+		change, _ = tagging.setting_status("wip")
+		broken = page("---", "owner: NE", "owner: MP", "---", "caps")
+		self.assertIsNone(change(broken))
+
 
 if __name__ == "__main__":
 	unittest.main()

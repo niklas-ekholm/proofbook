@@ -29,8 +29,8 @@ from collections import namedtuple
 
 import objc
 from AppKit import (
+	NSApplication,
 	NSAttributedString,
-	NSMenuItem,
 	NSBackgroundStyleEmphasized,
 	NSBezierPath,
 	NSColor,
@@ -47,6 +47,7 @@ from AppKit import (
 	NSImageSymbolScaleSmall,
 	NSLineBreakByTruncatingTail,
 	NSMakeRect,
+	NSMenuItem,
 	NSMutableParagraphStyle,
 	NSNotificationCenter,
 	NSParagraphStyleAttributeName,
@@ -157,6 +158,8 @@ ATTACH_ATTEMPTS = 10
 # reports as None — cannot read as a confirmation.
 SAVE_NEW = 1
 CANCEL = 0
+# The answer of a dialog that asks for a value: its one confirming button.
+CONFIRM = 1
 
 # The palette's left margin, and the one number the whole palette lines up
 # on. Glyphs draws the section header — the palette's name and its collapse
@@ -1690,23 +1693,39 @@ class ProofBookPalette(PalettePlugin):
 		Folder rows and empty space have their own menus (#24); for now they
 		have none.
 		"""
-		index = sender.getNSTableView().clickedRow()
+		index = self._row_under_cursor(sender.getNSTableView())
 		if index < 0 or index >= len(self.rows) or self.rows[index].is_dir:
 			return None
 		row = self.rows[index]
-		# A placeholder is not read to build a menu, and a header that will not
-		# parse says nothing about a note: either way it is not known.
+		# Read now if it is on disk — never a placeholder (ADR-0004) — so a
+		# header broken since the last walk disables the header verbs at once.
 		document = self._read_page(row.path)
-		has_note = None
-		if document is not None and not document.malformed:
-			has_note = bool(document.header.note)
+		if document is not None and document.malformed:
+			row = row._replace(status=tree.MALFORMED)
+		settled = {
+			path: page for path, page in self.known.items() if path not in self.pendingTags
+		}
 		model = menus.page_menu(
 			row,
-			menus.owners(self.known),
+			menus.owners(settled),
 			Glyphs.defaults[LAST_OWNER_KEY],
-			has_note,
+			menus.has_note(document),
 		)
 		return self._menu_items(model, row.path)
+
+	@objc.python_method
+	def _row_under_cursor(self, table):
+		"""The row the right-click landed on, from the event itself.
+
+		Not `clickedRow`: vanilla's table answers `menuForEvent:` without
+		calling up to `NSTableView`, which is what records it, so it can name
+		the row of an earlier click.
+		"""
+		event = NSApplication.sharedApplication().currentEvent()
+		if event is None:
+			return -1
+		point = table.convertPoint_fromView_(event.locationInWindow(), None)
+		return table.rowAtPoint_(point)
 
 	@objc.python_method
 	def _menu_items(self, model, path):
@@ -1719,7 +1738,7 @@ class ProofBookPalette(PalettePlugin):
 		"""
 		items = []
 		for item in model:
-			if item is menus.SEPARATOR or item.title == menus.SEPARATOR.title:
+			if item is menus.SEPARATOR:
 				items.append("----")
 				continue
 			if item.action is None and not item.items:
@@ -1747,26 +1766,32 @@ class ProofBookPalette(PalettePlugin):
 	@objc.python_method
 	def _menu_chose(self, path, action):
 		"""Carry out a menu verb on its target row."""
-		verb = action[0]
-		if verb == menus.SET_STATUS:
-			# The swatch's operation exactly (#42): same read, same write,
-			# same download on a placeholder.
-			self._retag(path, *tagging.setting(status=action[1]))
-		elif verb == menus.SET_OWNER:
-			self._set_owner(path, action[1])
-		elif verb == menus.NEW_OWNER:
-			owner = self._ask_owner()
-			if owner is not None:
-				self._set_owner(path, owner)
-		elif verb == menus.EDIT_NOTE:
-			self._edit_note(path)
+		verb, *value = action
+		{
+			menus.SET_STATUS: self._set_status,
+			menus.SET_OWNER: self._set_owner,
+			menus.NEW_OWNER: self._new_owner,
+			menus.EDIT_NOTE: self._edit_note,
+		}[verb](path, *value)
+
+	@objc.python_method
+	def _set_status(self, path, value):
+		"""The swatch's operation exactly (#42): same read, same write, same
+		download on a placeholder — with the status chosen, not cycled."""
+		self._retag(path, *tagging.setting_status(value))
+
+	@objc.python_method
+	def _new_owner(self, path):
+		owner = self._ask_owner()
+		if owner is not None:
+			self._set_owner(path, owner)
 
 	@objc.python_method
 	def _set_owner(self, path, owner):
 		"""Set, or with None clear, a page's owner; remember the last one set."""
 		if owner is not None:
-			Glyphs.defaults[LAST_OWNER_KEY] = owner.upper()
-		self._retag(path, *tagging.setting(owner=owner))
+			Glyphs.defaults[LAST_OWNER_KEY] = status.written_owner(owner)
+		self._retag(path, *tagging.setting_owner(owner))
 
 	@objc.python_method
 	def _ask_owner(self):
@@ -1782,10 +1807,10 @@ class ProofBookPalette(PalettePlugin):
 		answer = dialogs.ask(
 			"New owner",
 			"One to four letters: the initials of the person responsible.",
-			buttonTitles=[("Set owner", SAVE_NEW), ("Cancel", CANCEL)],
+			buttonTitles=[("Set owner", CONFIRM), ("Cancel", CANCEL)],
 			accessoryView=field,
 		)
-		if answer != SAVE_NEW:
+		if answer != CONFIRM:
 			return None
 		text = field.stringValue().strip()
 		if not status.is_owner(text):
@@ -1793,7 +1818,7 @@ class ProofBookPalette(PalettePlugin):
 				"“%s” is not an owner: one to four letters, nothing else." % text
 			)
 			return None
-		return text.upper()
+		return status.written_owner(text)
 
 	@objc.python_method
 	def _edit_note(self, path):

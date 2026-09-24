@@ -333,17 +333,15 @@ class AdapterRules(unittest.TestCase):
 		self.assertIn("self._palette_view", pysource.called_names(settings))
 
 	def test_the_context_menu_targets_the_clicked_row(self):
-		# Spec §8: right-click targets the row under the cursor, which is
-		# `clickedRow` — never the selection, which may be another page.
+		# Spec §8: right-click targets the row under the cursor — found from
+		# the event, never the selection, which may be another page.
 		menu = pysource.function(self.adapter, "treeMenu")
 		self.assertIsNotNone(menu, "the tree has no context menu")
 		self.assertIn("menuCallback", pysource.keyword_argument_names(self.adapter))
-		self.assertTrue(
-			[
-				node
-				for node in ast.walk(menu)
-				if isinstance(node, ast.Attribute) and node.attr == "clickedRow"
-			]
+		self.assertIn("self._row_under_cursor", pysource.called_names(menu))
+		self.assertIn(
+			"table.rowAtPoint_",
+			pysource.called_names(pysource.function(self.adapter, "_row_under_cursor")),
 		)
 		self.assertEqual(pysource.attribute_reads(menu, "self.selectedPath"), [])
 
@@ -368,9 +366,14 @@ class AdapterRules(unittest.TestCase):
 
 	def test_the_menus_status_verb_is_the_swatchs_operation(self):
 		# #42: same read, same write, same download on a placeholder.
-		chose = pysource.function(self.adapter, "_menu_chose")
-		self.assertIn("self._retag", pysource.called_names(chose))
-		self.assertIn("tagging.setting", pysource.called_names(chose))
+		self.assertIn(
+			"tagging.setting_status",
+			pysource.called_names(pysource.function(self.adapter, "_set_status")),
+		)
+		self.assertIn(
+			"self._retag",
+			pysource.called_names(pysource.function(self.adapter, "_set_status")),
+		)
 
 	def test_a_row_draws_itself_rather_than_stacking_up_controls(self):
 		# List2 reuses cell views, so a row built out of subviews would be

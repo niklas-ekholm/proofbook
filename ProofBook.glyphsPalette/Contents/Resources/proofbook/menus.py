@@ -47,14 +47,27 @@ def owners(known):
 
 	Discovered from what the status cache and the walk know (#37), so on a
 	book only partly known the list covers only the pages known so far. The
-	last owner set is offered whatever this finds.
+	last owner set is offered whatever this finds. Only owners the UI would
+	accept are offered: a hand-written `owner: Niklas Ekholm` is shown on its
+	page, but choosing it elsewhere would write a value no header holds.
 	"""
 	found = {
-		page.owner.strip().upper()
+		status.written_owner(page.owner)
 		for page in known.values()
-		if page.owner and not page.malformed
+		if page.owner and not page.malformed and status.is_owner(page.owner.strip())
 	}
 	return sorted(found)
+
+
+def has_note(document):
+	"""Whether a page has a note, as far as its read says: None if unknown.
+
+	None for a page that was not read — a placeholder is not read to build a
+	menu — and for a header that will not parse, which says nothing.
+	"""
+	if document is None or document.malformed:
+		return None
+	return bool(document.header.note)
 
 
 def page_menu(row, discovered, last_owner, has_note):
@@ -96,11 +109,14 @@ def _statuses(row):
 def _owners(row, discovered, last_owner):
 	choices = []
 	if last_owner:
-		choices.append(last_owner.strip().upper())
+		choices.append(status.written_owner(last_owner))
 	choices += [owner for owner in discovered if owner not in choices]
 	items = [Item(owner, (SET_OWNER, owner)) for owner in choices]
 	if items:
 		items.append(SEPARATOR)
 	items.append(Item("New owner…", (NEW_OWNER,)))
-	items.append(Item("Clear owner", (SET_OWNER, None) if row.owner else None))
+	# Live on an owned page, and on one whose owner is not known yet:
+	# clearing an owner that turns out absent writes nothing.
+	unknown = row.status in (tree.UNKNOWN, tree.WALKING)
+	items.append(Item("Clear owner", (SET_OWNER, None) if row.owner or unknown else None))
 	return items
