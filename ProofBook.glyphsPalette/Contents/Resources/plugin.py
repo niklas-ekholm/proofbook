@@ -277,15 +277,10 @@ PULSE_PERIOD = 1.1
 PULSE_FRAME = 0.05
 PULSE_FLOOR = 0.35
 
-# The placeholder swatch's dashes, and the hatching of the coverage bar's
-# unknown share: on and off lengths in points.
+# The unknown swatch's dash, as on and off lengths in points; and the distance
+# between the stripes hatching the coverage bar's unknown share.
 SWATCH_DASH = (1.6, 1.3)
 HATCH_SPACING = 3.0
-
-# What the coverage strip says while the first walk of a proof-book has not
-# returned (#48): not an empty state — those are conclusions about the
-# folder, and this is the absence of one.
-NOT_YET_LISTED = "Reading the proof-book…"
 
 # The one opt-in debug switch (spec §9): off, and logging to the Macro Panel
 # when on. Not a logging framework.
@@ -406,8 +401,11 @@ def _without_placeholders(entries, landed):
 
 
 #: One walk of the proof-book: the listing, what is known of each page's
-#: header, and the cache it leaves. `book` None is the walk of no proof-book.
-_Walked = namedtuple("_Walked", "book entries known pages", defaults=(None,))
+#: header, the pages still to be read, and the cache it leaves. `book` None is
+#: the walk of no proof-book.
+_Walked = namedtuple(
+	"_Walked", "book entries known pending pages", defaults=((), None)
+)
 
 
 def _load_cache(book):
@@ -523,6 +521,7 @@ def _pulse_alpha():
 
 
 def _warn_color(emphasized):
+	"""The malformed swatch's ink: the warning colour, or legible on the accent."""
 	if emphasized:
 		return NSColor.alternateSelectedControlTextColor()
 	return NSColor.systemRedColor()
@@ -788,7 +787,7 @@ class ProofBookRowView(NSView):
 
 	@objc.python_method
 	def _drawSwatch(self, marker, status, emphasized):
-		"""Six states in one 9pt circle (spec §4, #41).
+		"""Six appearances in one 9pt circle (spec §4, #41).
 
 		`todo` an empty outline, `wip` amber, `done` green; and for the three
 		absences of an answer, a dashed outline (unknown), a faint pulsing one
@@ -835,7 +834,10 @@ class ProofBookRowView(NSView):
 		if status == tree.UNKNOWN:
 			outline.setLineDash_count_phase_(SWATCH_DASH, len(SWATCH_DASH), 0.0)
 		elif status == tree.WALKING:
-			color = color.colorWithAlphaComponent_(color.alphaComponent() * _pulse_alpha())
+			# Fainter than `todo` even at the top of its breath, so the two
+			# are never the same ink (#41).
+			base = color if emphasized else NSColor.tertiaryLabelColor()
+			color = base.colorWithAlphaComponent_(base.alphaComponent() * _pulse_alpha())
 		color.set()
 		outline.stroke()
 
@@ -1210,6 +1212,8 @@ class ProofBookPalette(PalettePlugin):
 		# state. And whether the pulse's redraw loop is scheduled.
 		self.listedBook = None
 		self.pulsing = False
+		# The pages the running walk has still to read: they pulse (#41).
+		self.pendingReads = set()
 		# Single-page placeholder reads (spec §7): one per page, capped, each
 		# with a deadline; `expiries` is what each one says when it passes.
 		self.flights = reading.Flights()
@@ -2451,9 +2455,21 @@ class ProofBookPalette(PalettePlugin):
 				self.bookPath,
 				pages,
 				self.cacheSaved,
-				failed=self.walks.failed,
+				failed=self._walk_failed,
 			)
 		)
+
+	@objc.python_method
+	def _walk_failed(self):
+		"""A walk raised. Let the next one run, and stop waiting on this one.
+
+		Nothing it was going to read is pending any more, and the palette is
+		not left saying *Reading the proof-book…* over a walk that is gone.
+		"""
+		self.walks.failed()
+		self.pendingReads = set()
+		self.listedBook = self.bookPath
+		self._draw()
 
 	@objc.python_method
 	def _walk(self, book, pages, saved):
@@ -2470,14 +2486,16 @@ class ProofBookPalette(PalettePlugin):
 			pages = saved = _load_cache(book)
 		entries = self._listing(book)
 		plan = cache.plan(pages, entries)
-		self._on_main(self._listed, _Walked(book, entries, dict(plan.known)))
+		self._on_main(
+			self._listed, _Walked(book, entries, dict(plan.known), tuple(plan.to_read))
+		)
 		reads = {}
 		by_path = {entry.path: entry for entry in entries}
 		for start in range(0, len(plan.to_read), READ_CHUNK):
 			chunk = [by_path[path] for path in plan.to_read[start : start + READ_CHUNK]]
 			landed = self._headers(book, chunk)
 			reads.update(landed)
-			self._on_main(self._headers_landed, book, landed)
+			self._on_main(self._headers_landed, book, landed, [entry.path for entry in chunk])
 		updated = cache.updated(pages, entries, reads)
 		# Against the file, not the copy: a stamp the main thread made since
 		# the last write is in the copy, and still has to reach the disk.
@@ -2489,7 +2507,7 @@ class ProofBookPalette(PalettePlugin):
 		)
 		known = dict(plan.known)
 		known.update(reads)
-		return _Walked(book, entries, known, updated)
+		return _Walked(book, entries, known, (), updated)
 
 	@objc.python_method
 	def _walked(self, walked):
@@ -2509,10 +2527,15 @@ class ProofBookPalette(PalettePlugin):
 		self._listed(walked)
 
 	@objc.python_method
-	def _headers_landed(self, book, landed):
-		"""A chunk of a walk's reads: fold it in, and redraw soon, not now."""
+	def _headers_landed(self, book, landed, tried):
+		"""A chunk of a walk's reads: fold it in, and redraw soon, not now.
+
+		Every page `tried` stops pulsing, read or not: one that would not
+		read is unknown, not still walking.
+		"""
 		if book != self.bookPath:
 			return
+		self.pendingReads.difference_update(tried)
 		self.known.update(landed)
 		self.known, self.written = cache.overridden(
 			self.known, self.entries, self.written
@@ -2557,6 +2580,7 @@ class ProofBookPalette(PalettePlugin):
 		if walked.book != self.bookPath:
 			return
 		self.listedBook = walked.book
+		self.pendingReads = set(walked.pending)
 		self.entries = walked.entries
 		self.known, self.written = cache.overridden(
 			walked.known, walked.entries, self.written
@@ -2682,7 +2706,7 @@ class ProofBookPalette(PalettePlugin):
 		"""
 		group = self.paletteView.group
 		self.rows = tree.flatten(
-			self.entries, self.expanded, self.known, self.walks.walking
+			self.entries, self.expanded, self.known, self.pendingReads
 		)
 		self._draw_coverage()
 		selected = [
@@ -2700,7 +2724,12 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _pulse_later(self):
-		"""Keep the still-walking swatches breathing, while there are any."""
+		"""Keep the still-walking swatches breathing, while there are any.
+
+		An animation, not a refresh: it reads nothing and walks nothing (spec
+		§6's no-polling rule is about the disk), it redraws only the visible
+		rows, and it stops the frame after the last walking row is gone.
+		"""
 		if self.pulsing or not any(row.status == tree.WALKING for row in self.rows):
 			return
 		self.pulsing = True
@@ -2721,7 +2750,10 @@ class ProofBookPalette(PalettePlugin):
 
 	@objc.python_method
 	def _draw_coverage(self):
-		"""The bar and its `N of M done`, or nothing at all.
+		"""The bar, `N of M done` and `K unknown` — or one quiet line, or nothing.
+
+		Before the first walk of this proof-book has returned, the strip says
+		it is reading, with no bar (#48).
 
 		Counted over the listing, so a folder nobody has expanded counts too.
 		A proof-book with no pages in it draws neither: the core answers with
@@ -2733,7 +2765,7 @@ class ProofBookPalette(PalettePlugin):
 			# Not yet listed: one quiet line, no bar, no rows (#48).
 			group.coverage.show(False)
 			group.coverageUnknown.show(False)
-			group.coverageCaption.set(NOT_YET_LISTED)
+			group.coverageCaption.set(tree.NOT_YET_LISTED)
 			group.coverageCaption.show(True)
 			return
 		count = tree.coverage(self.entries, self.known)

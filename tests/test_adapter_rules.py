@@ -708,6 +708,20 @@ class AdapterRules(unittest.TestCase):
 			pysource.called_names(pysource.function(self.adapter, "_placeholder_tagged")),
 		)
 
+	def test_the_pulse_runs_only_while_a_row_is_walking(self):
+		# An animation, not a polling timer (spec §6): it stops by itself.
+		later = pysource.function(self.adapter, "_pulse_later")
+		self.assertTrue(pysource.attribute_reads(later, "tree.WALKING"))
+		self.assertIn(
+			"self._pulse_later",
+			pysource.called_names(pysource.function(self.adapter, "pulse_")),
+		)
+
+	def test_a_failed_walk_is_not_left_reading(self):
+		failed = pysource.function(self.adapter, "_walk_failed")
+		self.assertIn("self.walks.failed", pysource.called_names(failed))
+		self.assertIn("self._draw", pysource.called_names(failed))
+
 	def test_a_placeholder_read_gets_a_thread_of_its_own(self):
 		# #42: never the shared worker, which one offline read would wedge
 		# for the session; and capped, and with a deadline on the notice.

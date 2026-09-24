@@ -43,11 +43,16 @@ Entry = namedtuple(
 #: its owner as written, and whether the header could be read at all.
 Known = namedtuple("Known", "status owner malformed")
 
-#: A row's swatch when there is no status to draw (#41). Never statuses:
+#: What a row shows when it has no status to show (#41). Never statuses:
 #: `todo` is an answer, and these are the absence of one.
 UNKNOWN = "unknown"  # A placeholder, or a page that would not read.
 WALKING = "walking"  # A downloaded page the walk has not reached yet.
 MALFORMED = "malformed"  # Read, and its header could not be parsed.
+
+#: What the coverage strip says before the first walk of a proof-book has
+#: returned (#48) — not an empty state: those are conclusions about the
+#: folder, and this is the absence of one.
+NOT_YET_LISTED = "Reading the proof-book…"
 
 #: `path` is the row's identity — the expansion set and the selection are both
 #: sets of these. `filename` is the raw name, and is the tooltip: the only
@@ -75,20 +80,24 @@ def pages(entries):
 	]
 
 
-def flatten(entries, expanded=(), known=None, walking=False):
+def flatten(entries, expanded=(), known=None, pending=()):
 	"""The visible rows, in draw order, for this listing and expansion set.
 
 	`.txt` files and all folders are shown, empty folders included; everything
 	else is silently ignored — no warning, no "unrecognised files" section.
-	`walking` says a walk is still under way, so a page it has not read yet
-	is `WALKING` rather than `UNKNOWN`.
+	`pending` is the pages the running walk has still to read: those are
+	`WALKING`, and any other page with no answer is `UNKNOWN`.
 	Everything is alphabetical, folders and pages in one alphabet, because the
 	proof-book is a folder a designer also browses in Finder.
 	"""
 	rows = []
-	placeholders = {entry.path for entry in entries if entry.placeholder}
-	swatch = lambda path: _swatch(path, known or {}, placeholders, walking)
-	_emit(_children_of(entries), "", 0, frozenset(expanded), swatch, rows)
+	known = known or {}
+	pending = frozenset(pending)
+
+	def answer(path):
+		return _answer(path, known, pending)
+
+	_emit(_children_of(entries), "", 0, frozenset(expanded), answer, rows)
 	return rows
 
 
@@ -131,19 +140,21 @@ def _children_of(entries):
 	return root
 
 
-def _swatch(path, known, placeholders, walking):
-	"""`(status or condition, owner)` for one page's row."""
+def _answer(path, known, pending=frozenset()):
+	"""`(status, owner)` for one page — or a condition, when there is no status.
+
+	The one place a page's answer is decided: the rows and the coverage
+	count both ask here, so they cannot disagree about what is unknown.
+	"""
 	page = known.get(path)
 	if page is None:
-		if path in placeholders or not walking:
-			return UNKNOWN, None
-		return WALKING, None
+		return (WALKING if path in pending else UNKNOWN), None
 	if page.malformed:
 		return MALFORMED, None
 	return status.shown(page.status), page.owner
 
 
-def _emit(children, prefix, depth, expanded, swatch, rows):
+def _emit(children, prefix, depth, expanded, answer, rows):
 	for name in sorted(children, key=lambda name: (name.casefold(), name)):
 		is_dir, grandchildren = children[name]
 		path = prefix + name
@@ -170,11 +181,11 @@ def _emit(children, prefix, depth, expanded, swatch, rows):
 					path + PATH_SEPARATOR,
 					depth + 1,
 					expanded,
-					swatch,
+					answer,
 					rows,
 				)
 		elif names.is_proof_page(name):
-			shown, owner = swatch(path)
+			shown, owner = answer(path)
 			rows.append(
 				Row(
 					path,
@@ -197,31 +208,36 @@ def coverage(entries, known=None):
 	much as one in front of the designer. Coverage is the question the whole
 	product exists for, and it is not a question about what is on screen.
 
-	The two fractions are computed here rather than in the adapter because a
+	The three fractions are computed here rather than in the adapter because a
 	proof-book with no pages is the case that divides by zero, and deciding it
 	once, on the side of the seam a test can reach, is cheaper than trusting
-	the drawing code to remember.
+	the drawing code to remember. Everything with no status — unknown, still
+	walking, malformed — counts as unknown, and the total is the whole book.
 	"""
 	known = known or {}
-	counts = {value: 0 for value in status.STATUSES + (UNKNOWN,)}
+	counts = {value: 0 for value in status.STATUSES}
+	unknown = 0
 	for entry in pages(entries):
-		page = known.get(entry.path)
-		if page is None or page.malformed:
-			counts[UNKNOWN] += 1
-		else:
+		shown, _ = _answer(entry.path, known)
+		if shown in counts:
 			# No `status` key counts as `todo`, exactly as it renders.
-			counts[status.shown(page.status)] += 1
-	total = sum(counts.values())
-	fraction = lambda count: count / total if total else 0.0
+			counts[shown] += 1
+		else:
+			unknown += 1
+	total = sum(counts.values()) + unknown
+
+	def fraction(count):
+		return count / total if total else 0.0
+
 	return Coverage(
 		counts[status.DONE],
 		counts[status.WIP],
 		counts[status.TODO],
-		counts[UNKNOWN],
+		unknown,
 		total,
 		fraction(counts[status.DONE]),
 		fraction(counts[status.WIP]),
-		fraction(counts[UNKNOWN]),
+		fraction(unknown),
 	)
 
 

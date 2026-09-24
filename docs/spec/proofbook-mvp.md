@@ -153,7 +153,7 @@ A proof-page row shows:
   | `todo` | solid grey outline |
   | `wip` | amber |
   | `done` | green |
-  | placeholder, status unknown | dashed grey outline |
+  | unknown — a placeholder nothing is known about, or a downloaded page that would not read | dashed grey outline |
   | still walking — not yet validated or read | faint outline, pulsing (~1.1s) |
   | malformed | warn-coloured outline, crossed |
 
