@@ -978,6 +978,18 @@ class AdapterRules(unittest.TestCase):
 		selection = pysource.function(self.adapter, "treeSelectionChanged")
 		self.assertIn("self._show_note", pysource.called_names(selection))
 
+	def test_the_pane_follows_a_rename_proofbook_performed(self):
+		# Tagging is a rename (ADR-0001), so a swatch click moves the file the
+		# pane is pointing at. The selection follows it; the note has to as
+		# well, or the next commit point opens a path that is gone, drops the
+		# draft, and complains about a file the designer never deleted.
+		rename = pysource.function(self.adapter, "_rename")
+		self.assertTrue(
+			pysource.attribute_assignment_lines(rename, "notePath"),
+			"a rename moves the selection but leaves the note pane aimed at "
+			"the old filename",
+		)
+
 	def test_a_refresh_does_not_eat_an_uncommitted_draft(self):
 		# Resign-key should have committed it already; this is the guard for
 		# every way it might not have.

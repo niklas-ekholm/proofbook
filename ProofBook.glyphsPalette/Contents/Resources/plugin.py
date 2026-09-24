@@ -1331,10 +1331,18 @@ class ProofBookPalette(PalettePlugin):
 				"Could not rename “%s”: %s"
 				% (os.path.basename(source), error.localizedDescription())
 			)
-		elif self.selectedPath == rename.source:
+		else:
 			# ProofBook renamed this one, so the selection follows it. Only a
 			# rename ProofBook did not perform reads as a delete (spec §6).
-			self.selectedPath = rename.destination
+			if self.selectedPath == rename.source:
+				self.selectedPath = rename.destination
+			if self.notePath == rename.source:
+				# And so does the note pane, which is aimed by path: tagging
+				# is a rename (ADR-0001), so a swatch click moves the file
+				# under a pane the designer may be typing into. Left behind,
+				# it would open a path that is gone at the next commit point
+				# and report a file nobody deleted as missing.
+				self.notePath = rename.destination
 		# Refresh either way: a rename that failed usually means the folder
 		# moved underneath the palette, which is exactly when the tree is
 		# stale. This is the "after its own writes" half of spec §6.
