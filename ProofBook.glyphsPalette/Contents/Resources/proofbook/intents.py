@@ -11,8 +11,8 @@ from collections import namedtuple
 MakeDir = namedtuple("MakeDir", "path")
 
 #: Move one file or folder to one new path, both relative to the proof-book
-#: root. Tagging is a rename, and so are rename and move — one intent covers
-#: all three, because to a filesystem they are the same call.
+#: root. Rename and move are both this — one intent covers the two, because to
+#: a filesystem they are the same call.
 Rename = namedtuple("Rename", "source destination")
 
 __all__ = ["MakeDir", "Rename"]

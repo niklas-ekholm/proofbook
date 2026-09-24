@@ -408,20 +408,20 @@ class AdapterRules(unittest.TestCase):
 			"lines up on",
 		)
 
-	def test_an_untagged_page_cannot_be_drawn_differently_from_a_todo(self):
-		# ADR-0001: an untagged page *is* TODO, and the palette must not
-		# invent a distinction the filename grammar does not make. The
+	def test_a_page_with_no_status_cannot_be_drawn_differently_from_a_todo(self):
+		# A page with no `status` key *is* `todo` (ADR-0006), and the palette
+		# must not invent a distinction the header does not make. The
 		# swatch's fill is chosen by naming the two statuses that have one,
 		# so there is no branch a third rendering could be added to.
 		fill = pysource.function(self.adapter, "_status_fill")
 		self.assertIsNotNone(fill)
-		self.assertTrue(pysource.attribute_reads(fill, "names.DONE"))
-		self.assertTrue(pysource.attribute_reads(fill, "names.WIP"))
+		self.assertTrue(pysource.attribute_reads(fill, "status.DONE"))
+		self.assertTrue(pysource.attribute_reads(fill, "status.WIP"))
 		self.assertEqual(
-			pysource.attribute_reads(fill, "names.TODO"),
+			pysource.attribute_reads(fill, "status.TODO"),
 			[],
-			"TODO is the fall-through — naming it is the first half of "
-			"drawing it differently from an untagged page",
+			"todo is the fall-through — naming it is the first half of "
+			"drawing it differently from a page with no status key",
 		)
 
 	def test_the_coverage_count_is_asked_of_the_listing_not_the_rows(self):
@@ -793,13 +793,29 @@ class AdapterRules(unittest.TestCase):
 		)
 
 	def test_the_status_the_swatch_writes_is_the_cores_decision(self):
-		# ADR-0005: reading a status out of a filename and choosing the next
+		# ADR-0005: reading a status out of a header and choosing the next
 		# one is string work, and string work lives where a test can reach it.
 		tagging = pysource.function(self.adapter, "tagPage")
-		self.assertIn("ops.cycle_status", pysource.called_names(tagging))
-		self.assertEqual(pysource.attribute_reads(tagging, "names.STATUSES"), [])
+		self.assertIn("tagging.cycled", pysource.called_names(tagging))
+		self.assertEqual(pysource.attribute_reads(tagging, "status.STATUSES"), [])
 		self.assertEqual(
-			pysource.attribute_reads(tagging, "names.next_status"), []
+			pysource.attribute_reads(tagging, "status.next_stored"), []
+		)
+
+	def test_a_tag_rewrites_the_page_in_place_and_never_renames(self):
+		# ADR-0006: status lives in the header. A tag that still renamed
+		# would cost the page its `git log` history, which is why it moved.
+		tagging = pysource.function(self.adapter, "tagPage")
+		called = pysource.called_names(tagging)
+		self.assertIn("self._replace", called)
+		for rename in ("self._rename", "self._perform", "os.rename"):
+			with self.subTest(call=rename):
+				self.assertNotIn(rename, called)
+		self.assertIn(
+			"self._resolve",
+			called,
+			"spec §6 refreshes after ProofBook's own writes; a tag that "
+			"leaves the old status on screen is one",
 		)
 
 	def test_the_tree_is_redrawn_after_the_adapters_own_write(self):

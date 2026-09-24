@@ -79,6 +79,8 @@ from proofbook import (  # noqa: E402
 	frontmatter,
 	names,
 	ops,
+	status,
+	tagging,
 	tree,
 )
 
@@ -234,6 +236,10 @@ NOTE_COLLAPSED_KEY = "com.niklasekholm.ProofBookPalette.NoteCollapsed"
 NOTE_TEMP_PREFIX = "."
 NOTE_TEMP_SUFFIX = ".proofbook-note"
 
+# The flag a cloud provider sets on a placeholder, from `lstat` (ADR-0004).
+# Statting never downloads; reading does, and offline it hangs (#38).
+SF_DATALESS = 0x40000000
+
 
 def _ceiling_height(window=None):
 	"""The tallest the palette may be on the screen it is on right now.
@@ -275,16 +281,16 @@ def _report_lines():
 # palette that stops matching the app around it.
 
 
-def _status_fill(status):
-	"""The swatch's fill, or None for the outline `TODO` draws.
+def _status_fill(value):
+	"""The swatch's fill, or None for the outline `todo` draws.
 
-	An untagged page arrives here as `TODO` (ADR-0001) and is therefore drawn
-	exactly like an explicitly-tagged one, which is the point: the palette
-	must not show a distinction the filename grammar does not make.
+	A page with no `status` key arrives here as `todo` and is therefore drawn
+	exactly like one written `status: todo` by hand: the palette must not
+	show a distinction the header does not make.
 	"""
-	if status == names.DONE:
+	if value == status.DONE:
 		return NSColor.systemGreenColor()
-	if status == names.WIP:
+	if value == status.WIP:
 		return NSColor.systemOrangeColor()
 	return None
 
@@ -909,6 +915,9 @@ class ProofBookPalette(PalettePlugin):
 		# across windows and nothing survives a window close.
 		self.bookPath = None
 		self.entries = []
+		# What each page's header says, by path — status and owner live in
+		# the file now (ADR-0006), so the listing alone cannot draw a row.
+		self.known = {}
 		self.rows = []
 		self.expanded = set()
 		self.selectedPath = None
@@ -1271,11 +1280,37 @@ class ProofBookPalette(PalettePlugin):
 	def tagPage(self, path):
 		"""A click on a proof-page's swatch: cycle its status (spec §8).
 
-		Status lives in the filename, so this renames the file. The whole
-		decision — which status is next, what the name becomes, and whether
-		anything is in the way — is the core's; this performs the answer.
+		Status lives in the header (ADR-0006), so this rewrites the file in
+		place — it never renames, and never collides. The bytes are read at
+		the moment of writing, on the main thread, so a note committed a
+		moment ago is in them and survives (spec §6, *Header writes*). What
+		they become is the core's decision; this reads and writes.
+
+		The read is inline and not yet routed: a placeholder blocks here until
+		it downloads, which is #49's to contain.
 		"""
-		self._perform(ops.cycle_status(path, self.entries))
+		filepath = self._page_path(path)
+		name = os.path.basename(filepath)
+		try:
+			with open(filepath, "rb") as handle:
+				source = handle.read()
+		except OSError as error:
+			self._alert("Could not read “%s”, so it was not tagged: %s" % (name, error))
+			self._resolve()
+			return
+		data = tagging.cycled(source)
+		if data is None:
+			# Refused, once, on the click, in the note pane's voice: a page
+			# whose header ProofBook cannot parse is untaggable (ADR-0006).
+			self._alert(
+				"The header of “%s” is not readable, so it was not tagged. "
+				"Fix it in a text editor." % name
+			)
+			return
+		if data != source:
+			self._replace(filepath, data, "Could not tag “%s”" % name)
+		# ProofBook's own write, so the tree is refreshed (spec §6).
+		self._resolve()
 
 	@objc.python_method
 	def _perform(self, plan):
@@ -1434,11 +1469,11 @@ class ProofBookPalette(PalettePlugin):
 		at it, and a refresh may not open a tab to say so.
 
 		**The question is asked before the file is read, not after.** This
-		runs on every become-key and after every rename, and the read is the
+		runs on every become-key and after every write, and the read is the
 		unrouted main-thread one ADR-0004 is about: a tab the designer has
 		typed into, or no ProofBook tab at all, is `LEAVE` whatever the file
 		says, and paying a placeholder download to be told so would put a
-		cloud round trip behind a window switch and behind tagging.
+		cloud round trip behind a window switch and behind every write.
 
 		Nothing is disowned when the answer is no. "Stops being ProofBook's"
 		needs no step of its own, because the question is asked afresh every
@@ -1590,7 +1625,8 @@ class ProofBookPalette(PalettePlugin):
 				% (os.path.basename(filepath), error)
 			)
 			return
-		data = frontmatter.write(source, draft)
+		document = frontmatter.read(source)
+		data = frontmatter.write(source, document.header._replace(note=draft))
 		if data is None:
 			self._drop_draft(
 				"The header of “%s” is no longer readable, so the note was "
@@ -1603,12 +1639,17 @@ class ProofBookPalette(PalettePlugin):
 			# normalising the writer would have done anyway.
 			self.noteOriginal = draft
 			return
-		if self._replace(filepath, data):
+		if self._replace(
+			filepath, data, "Could not save the note into “%s”" % os.path.basename(filepath)
+		):
 			self.noteOriginal = draft
 
 	@objc.python_method
-	def _replace(self, filepath, data):
+	def _replace(self, filepath, data, failure):
 		"""Put these bytes in that file, or leave the file exactly as it was.
+
+		`failure` opens the alert if it cannot: every header write comes
+		through here — a note commit and a tag alike — and says which it was.
 
 		The bytes after the header are the designer's proof text, and a
 		truncating write that fails partway — a full disk, a volume that went
@@ -1627,7 +1668,7 @@ class ProofBookPalette(PalettePlugin):
 			with open(temporary, "wb") as handle:
 				handle.write(data)
 		except OSError as error:
-			self._alert("Could not save the note: %s" % error)
+			self._alert("%s: %s" % (failure, error))
 			return False
 		# Two out parameters, so PyObjC answers with a tuple; the flag is
 		# first and the error last however many it decides to hand back.
@@ -1644,8 +1685,8 @@ class ProofBookPalette(PalettePlugin):
 		error = result[-1]
 		manager.removeItemAtPath_error_(temporary, None)
 		self._alert(
-			"Could not save the note into “%s”: %s"
-			% (filename, error.localizedDescription() if error else "unknown error")
+			"%s: %s"
+			% (failure, error.localizedDescription() if error else "unknown error")
 		)
 		return False
 
@@ -1758,6 +1799,7 @@ class ProofBookPalette(PalettePlugin):
 			self.expanded = set()
 			self.selectedPath = None
 		self.entries = self._listing(book) if book else []
+		self.known = self._headers(book, self.entries) if book else {}
 		# A page that has left the listing takes the selection with it — and
 		# nothing else: the Edit view is left exactly as it is, because
 		# deleting a file must not blank a tab that may still be being read
@@ -1789,6 +1831,37 @@ class ProofBookPalette(PalettePlugin):
 			for name in filenames:
 				entries.append(tree.Entry(prefix + name, False))
 		return entries
+
+	@objc.python_method
+	def _headers(self, root, entries):
+		"""What each page's header says, for the tree and the coverage.
+
+		Every downloaded page is read, inline, on every refresh — the status
+		cache (#47) and the worker (#25) replace this. A **placeholder is
+		never read**: the `SF_DATALESS` flag comes from `lstat`, which does
+		not download, and a placeholder read would block Glyphs until it did,
+		or forever offline (#38). Such a page is drawn `todo` until then.
+
+		A page that will not read is left out, and is drawn `todo` too; a
+		refresh is nobody's question, so it is not an alert (spec §7).
+		"""
+		known = {}
+		for entry in entries:
+			if entry.is_dir or not names.is_proof_page(entry.path):
+				continue
+			filepath = os.path.join(root, entry.path)
+			try:
+				if os.lstat(filepath).st_flags & SF_DATALESS:
+					continue
+				with open(filepath, "rb") as handle:
+					document = frontmatter.read(handle.read())
+			except OSError:
+				continue
+			header = document.header
+			known[entry.path] = tree.Known(
+				header.status, header.owner, document.malformed
+			)
+		return known
 
 	# -- Drawing ----------------------------------------------------------
 
@@ -1835,7 +1908,7 @@ class ProofBookPalette(PalettePlugin):
 		meant to answer.
 		"""
 		group = self.paletteView.group
-		self.rows = tree.flatten(self.entries, self.expanded)
+		self.rows = tree.flatten(self.entries, self.expanded, self.known)
 		self._draw_coverage()
 		selected = [
 			index
@@ -1859,7 +1932,7 @@ class ProofBookPalette(PalettePlugin):
 		rows that are the actual answer — a folder tree waiting for a page.
 		"""
 		group = self.paletteView.group
-		count = tree.coverage(self.entries)
+		count = tree.coverage(self.entries, self.known)
 		caption = tree.coverage_caption(count)
 		if caption is None:
 			group.coverage.show(False)

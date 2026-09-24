@@ -12,11 +12,15 @@ joins them back onto the root before it touches anything.
 The coverage count lives here too. It is the same listing asked a different
 question — how much of this proof-book is done — and it is deliberately not
 asked of the rows: coverage is about the whole book, not the visible part.
+
+Status and owner are not in the listing: they live in each page's header
+(ADR-0006). The adapter hands them over as `known`, a map from path to what
+it knows about that page; a page missing from it is drawn `todo` and unowned.
 """
 
 from collections import namedtuple
 
-from . import names
+from . import names, status
 
 PATH_SEPARATOR = "/"
 
@@ -25,18 +29,25 @@ PATH_SEPARATOR = "/"
 #: is given, so an adapter that yields only files still draws the tree.
 Entry = namedtuple("Entry", "path is_dir")
 
+#: What is known about one page's header: its stored status (None is `todo`),
+#: its owner as written, and whether the header could be read at all.
+Known = namedtuple("Known", "status owner malformed")
+
+#: What a page nothing is known about is drawn as.
+NOTHING_KNOWN = Known(None, None, False)
+
 #: `path` is the row's identity — the expansion set and the selection are both
 #: sets of these. `filename` is the raw name, and is the tooltip: the only
 #: place in the palette a filename appears. `expanded` is None for a page.
 Row = namedtuple("Row", "path depth is_dir filename subject status owner expanded")
 
 #: The coverage answer in four counts, plus the two proportions the bar draws.
-#: `todo` carries the untagged pages too — they render as `TODO` and count as
-#: it, because a page nobody has tagged is a page nobody has started.
+#: `todo` carries every page with no `status` key — they render as `todo` and
+#: count as it, because a page nobody has tagged is a page nobody has started.
 Coverage = namedtuple("Coverage", "done wip todo total done_fraction wip_fraction")
 
 
-def flatten(entries, expanded=()):
+def flatten(entries, expanded=(), known=None):
 	"""The visible rows, in draw order, for this listing and expansion set.
 
 	`.txt` files and all folders are shown, empty folders included; everything
@@ -45,7 +56,7 @@ def flatten(entries, expanded=()):
 	proof-book is a folder a designer also browses in Finder.
 	"""
 	rows = []
-	_emit(_children_of(entries), "", 0, frozenset(expanded), rows)
+	_emit(_children_of(entries), "", 0, frozenset(expanded), known or {}, rows)
 	return rows
 
 
@@ -88,7 +99,7 @@ def _children_of(entries):
 	return root
 
 
-def _emit(children, prefix, depth, expanded, rows):
+def _emit(children, prefix, depth, expanded, known, rows):
 	for name in sorted(children, key=lambda name: (name.casefold(), name)):
 		is_dir, grandchildren = children[name]
 		path = prefix + name
@@ -110,24 +121,31 @@ def _emit(children, prefix, depth, expanded, rows):
 				)
 			)
 			if is_expanded:
-				_emit(grandchildren, path + PATH_SEPARATOR, depth + 1, expanded, rows)
+				_emit(
+					grandchildren,
+					path + PATH_SEPARATOR,
+					depth + 1,
+					expanded,
+					known,
+					rows,
+				)
 		elif names.is_proof_page(name):
-			page = names.parse(name)
+			page = known.get(path, NOTHING_KNOWN)
 			rows.append(
 				Row(
 					path,
 					depth,
 					False,
 					name,
-					names.display_subject(page.subject),
-					page.status,
+					names.display_subject(names.subject(name)),
+					status.shown(page.status),
 					page.owner,
 					None,
 				)
 			)
 
 
-def coverage(entries):
+def coverage(entries, known=None):
 	"""The proof-book's coverage, counted over the whole listing.
 
 	Recursive and expansion-blind by construction: this is asked of the
@@ -140,23 +158,24 @@ def coverage(entries):
 	once, on the side of the seam a test can reach, is cheaper than trusting
 	the drawing code to remember.
 	"""
-	counts = {status: 0 for status in names.STATUSES}
+	known = known or {}
+	counts = {value: 0 for value in status.STATUSES}
 	for entry in entries:
 		if entry.is_dir:
 			continue
 		name = entry.path.split(PATH_SEPARATOR)[-1]
 		if not names.is_proof_page(name):
 			continue
-		# An untagged page counts as TODO, exactly as it renders (ADR-0001).
-		counts[names.parse(name).status] += 1
+		# A page with no `status` key counts as `todo`, exactly as it renders.
+		counts[status.shown(known.get(entry.path, NOTHING_KNOWN).status)] += 1
 	total = sum(counts.values())
 	return Coverage(
-		counts[names.DONE],
-		counts[names.WIP],
-		counts[names.TODO],
+		counts[status.DONE],
+		counts[status.WIP],
+		counts[status.TODO],
 		total,
-		counts[names.DONE] / total if total else 0.0,
-		counts[names.WIP] / total if total else 0.0,
+		counts[status.DONE] / total if total else 0.0,
+		counts[status.WIP] / total if total else 0.0,
 	)
 
 
