@@ -109,15 +109,15 @@ class Owners(unittest.TestCase):
 
 class TheNote(unittest.TestCase):
 	def test_a_page_with_a_note_offers_to_edit_it(self):
-		note = menus.page_menu(row(), [], None, True)[-1]
-		self.assertEqual((note.title, note.action), ("Edit note", (menus.EDIT_NOTE,)))
+		note = find(menus.page_menu(row(), [], None, True), "Edit note")
+		self.assertEqual(note.action, (menus.EDIT_NOTE,))
 
 	def test_a_page_without_one_offers_to_add_one(self):
-		self.assertEqual(menus.page_menu(row(), [], None, False)[-1].title, "Add note")
+		self.assertIn("Add note", titles(menus.page_menu(row(), [], None, False)))
 
 	def test_a_page_whose_note_is_not_known_offers_to_edit(self):
 		# A placeholder is not read to build a menu.
-		self.assertEqual(menus.page_menu(row(), [], None, None)[-1].title, "Edit note")
+		self.assertIn("Edit note", titles(menus.page_menu(row(), [], None, None)))
 
 
 class NoteKnowledge(unittest.TestCase):
@@ -156,6 +156,62 @@ class Malformed(unittest.TestCase):
 		reason = find(self.items, menus.HEADER_UNREADABLE)
 		self.assertIsNone(reason.action)
 
+
+
+FOLDERS = [("", 0), ("greek", 1), ("latin", 1), ("latin/caps", 2)]
+
+
+class FileVerbs(unittest.TestCase):
+	"""The page row's file verbs (spec §8, #23)."""
+
+	def menu(self, path="latin/a.txt", shown="wip", folders=FOLDERS):
+		return menus.page_menu(row(path=path, shown=shown), [], None, True, folders)
+
+	def test_they_follow_the_metadata_in_the_specs_order(self):
+		self.assertEqual(
+			titles(self.menu())[5:],
+			[
+				"----", "Rename…", "Move to", "Duplicate", "----",
+				"New proof-page", "----", "Reveal in Finder", "Move to Trash",
+			],
+		)
+
+	def test_move_to_lists_the_folders_indented_with_the_current_parent_greyed(self):
+		move = find(self.menu(), "Move to")
+		self.assertEqual(
+			[item.title for item in move.items],
+			["proofbook", "    greek", "    latin", "        caps"],
+		)
+		self.assertEqual(move.items[1].action, (menus.MOVE_TO, "greek"))
+		self.assertIsNone(move.items[2].action)
+		self.assertEqual(move.items[0].action, (menus.MOVE_TO, ""))
+
+	def test_move_to_is_disabled_when_there_is_nowhere_else(self):
+		move = find(self.menu(path="a.txt", folders=[("", 0)]), "Move to")
+		self.assertIsNone(move.action)
+		self.assertEqual(move.items, ())
+
+	def test_new_proof_page_is_a_sibling(self):
+		self.assertEqual(
+			find(self.menu(), "New proof-page").action, (menus.NEW_PAGE, "latin")
+		)
+
+	def test_the_rest_act_on_the_page(self):
+		items = self.menu()
+		self.assertEqual(find(items, "Rename…").action, (menus.RENAME,))
+		self.assertEqual(find(items, "Duplicate").action, (menus.DUPLICATE,))
+		self.assertEqual(find(items, "Reveal in Finder").action, (menus.REVEAL,))
+		self.assertEqual(find(items, "Move to Trash").action, (menus.TRASH,))
+
+	def test_a_malformed_page_keeps_its_file_verbs_but_cannot_be_duplicated(self):
+		# The claims cannot be reset in a header ProofBook cannot parse.
+		items = self.menu(shown=tree.MALFORMED)
+		self.assertIsNone(find(items, "Duplicate").action)
+		self.assertEqual(find(items, "Duplicate").tooltip, menus.HEADER_UNREADABLE)
+		for title in ("Rename…", "Move to", "Reveal in Finder", "Move to Trash"):
+			with self.subTest(title=title):
+				item = find(items, title)
+				self.assertTrue(item.action or item.items)
 
 if __name__ == "__main__":
 	unittest.main()

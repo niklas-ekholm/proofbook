@@ -225,7 +225,7 @@ State is per-palette-instance and in-memory: selection, expansion, scroll positi
 
 ### Note writes
 
-The note pane has no save button. It commits **on blur, on selection change, and on the window resigning key.** The last is load-bearing: it guarantees a draft reaches disk before the become-key refresh reads the file back, so a refresh can never clobber an uncommitted note. No per-keystroke writes. A commit that finds the file gone drops the draft and says so, rather than recreating the file.
+The note pane has no save button. It commits **on blur, on selection change, and on the window resigning key.** The last is load-bearing: it guarantees a draft reaches disk before the become-key refresh reads the file back, so a refresh can never clobber an uncommitted note. No per-keystroke writes. A commit that finds the file gone drops the draft and says so, rather than recreating the file. One more moment commits: **just before *Move to Trash* takes the page the pane is showing** (#23), so the draft goes to the Trash inside the file, where it can be recovered, rather than vanishing when the page leaves the listing.
 
 ### Header writes
 

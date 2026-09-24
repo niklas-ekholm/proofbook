@@ -113,5 +113,24 @@ class Setting(unittest.TestCase):
 		self.assertIsNone(change(broken))
 
 
+
+class Resetting(unittest.TestCase):
+	"""*Duplicate* resets every claim, and keeps what is not a claim."""
+
+	def test_status_owner_and_note_go_and_unknown_keys_stay(self):
+		source = page(
+			"---", "status: done", "owner: NE", "seen: today", "note: |", "  Hi.",
+			"---", "caps",
+		)
+		self.assertEqual(tagging.reset(source), page("---", "seen: today", "---", "caps"))
+
+	def test_a_page_with_nothing_else_loses_its_header(self):
+		self.assertEqual(
+			tagging.reset(page("---", "status: wip", "---", "caps")), page("caps")
+		)
+
+	def test_a_malformed_header_refuses(self):
+		self.assertIsNone(tagging.reset(page("---", "status: wip", "caps")))
+
 if __name__ == "__main__":
 	unittest.main()

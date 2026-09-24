@@ -55,6 +55,17 @@ def setting_owner(owner):
 	)
 
 
+def reset(data):
+	"""A duplicate's bytes: every claim reset, everything else kept (spec §8).
+
+	No status, no owner, no note — a new file never inherits a progress
+	claim — while keys ProofBook does not recognise are kept, as everywhere
+	(ADR-0003). None for a header that cannot be parsed: the claims cannot be
+	reset in bytes ProofBook does not understand.
+	"""
+	return _rewritten(data, lambda header: {"status": None, "owner": None, "note": None})
+
+
 def _rewritten(data, fields):
 	"""The bytes with the header fields `fields(header)` names replaced.
 
