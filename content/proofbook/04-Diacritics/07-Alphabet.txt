@@ -1,5 +1,0 @@
-ABCDEFGHIJ
-KLMNOPQRS
-TUVWXYZ
-abcdefghijklmn
-opqrstuvwxyz

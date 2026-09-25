@@ -1,3 +1,8 @@
+---
+note: |
+    tää on vielä kesken, ei ole kattava
+---
+
 ď! ď, ď. ď; ď? ďa ďh ďk ďl ďm ďo ďt ďu ďá ďž
 Ľ. Ľa Ľu Ľú
 ľ, ľ. ľ: ľ; ľa ľb ľg ľh ľk ľm ľn ľo ľs ľt ľu ľv ľú ľč ľň ľš
@@ -7,5 +12,3 @@ nnTánnTănnTânnTännTànnTānnTånnTãnnTćnnTčnnTċnnTénnTěnnTênn
 nnTënnTènnTēnnTẽnnTğnnTǧnnTınnTĩnnTńnnTňnnTñnnTónnTônnTönnTònn
 nnTőnnTōnnTõnnTŕnnTřnnTśnnTšnnTúnnTûnnTünnTùnnTűnnTūnnTůnnTũnn
 nnTýnnTŷnnTÿnnTỳnnTỹnnTžnnlʹnnounnRAnnVonn——nn––nnkann
-
-tää on vielä kesken, ei ole kattava
