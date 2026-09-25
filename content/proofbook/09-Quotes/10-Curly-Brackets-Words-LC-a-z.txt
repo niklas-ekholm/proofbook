@@ -1,0 +1,7 @@
+{advisory} {bordeaux} {chainsaw} {doloroso}
+{ersatz} {feminist} {giftwrap} {hometown}
+{iraq} {janiform} {kimchi} {liftoff}
+{mazeltov} {nonquota} {overdub} {pubertal}
+{quantisize} {rousseau} {syntesis} {taj}
+{unicolor} {vandalic} {warmouth} {xeroxing}
+{yardbird} {ziplock}

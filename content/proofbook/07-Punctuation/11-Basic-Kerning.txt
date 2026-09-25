@@ -1,0 +1,21 @@
+I I A I I B I I C I I D I I E I I F I I G I I H I I I I I J I I K I I L I I M I I N I I O I I P I I Q I I R I I S I I T I I U I I V I I W I I X I I Y I I Z I I
+.A.B.C.D.E.F.G.H.I.J.K.L.M.N.O.P.Q.R.S.T.U.V.W.X.Y.Z.
+,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,
+_A_B_C_D_E_F_G_H_I_J_K_L_M_N_O_P_Q_R_S_T_U_V_W_X_Y_Z_
+-A-B-C-D-E-F-G-H-I-J-K-L-M-N-O-P-Q-R-S-T-U-V-W-X-Y-Z-
+–A–B–C–D–E–F–G–H–I–J–K–L–M–N–O–P–Q–R–S–T–U–V–W–X–Y–Z–
+—A—B—C—D—E—F—G—H—I—J—K—L—M—N—O—P—Q—R—S—T—U—V—W—X—Y—Z—
+·A·B·C·D·E·F·G·H·I·J·K·L·M·N·O·P·Q·R·S·T·U·V·W·X·Y·Z·
+•A•B•C•D•E•F•G•H•I•J•K•L•M•N•O•P•Q•R•S•T•U•V•W•X•Y•Z•
+:A:B:C:D:E:F:G:H:I:J:K:L:M:N:O:P:Q:R:S:T:U:V:W:X:Y:Z:
+;A;B;C;D;E;F;G;H;I;J;K;L;M;N;O;P;Q;R;S;T;U;V;W;X;Y;Z;
+
+
+!A!B!C!D!E!F!G!H!I!J!K!L!M!N!O!P!Q!R!S!T!U!V!W!X!Y!Z!
+?A?B?C?D?E?F?G?H?I?J?K?L?M?N?O?P?Q?R?S?T?U?V?W?X?Y?Z?
+¡A¡B¡C¡D¡E¡F¡G¡H¡I¡J¡K¡L¡M¡N¡O¡P¡Q¡R¡S¡T¡U¡V¡W¡X¡Y¡Z¡
+¿A¿B¿C¿D¿E¿F¿G¿H¿I¿J¿K¿L¿M¿N¿O¿P¿Q¿R¿S¿T¿U¿V¿W¿X¿Y¿Z¿
+*A*B*C*D*E*F*G*H*I*J*K*L*M*N*O*P*Q*R*S*T*U*V*W*X*Y*Z*
+#A#B#C#D#E#F#G#H#I#J#K#L#M#N#O#P#Q#R#S#T#U#V#W#X#Y#Z#
+\A\B\C\D\E\F\G\H\I\J\K\L\M/backslash N\O\P\Q\R\S\T\U\V\W\X\Y\Z\
+//A//B//C//D//E//F//G//H//I//J//K//L//M//N//O//P//Q//R//S//T//U//V//W//Y//Z//
